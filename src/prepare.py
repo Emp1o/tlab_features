@@ -13,14 +13,36 @@ con.sql(f"""
     FROM read_csv_auto('data/events.csv')
 """)
 
+# Split bounds come from the full log, before any bot filter. The bot rule itself
+# may use only train days: a cart on val/test is a future label, and using it to
+# decide who is a bot would leak that label into every split.
+last_day = con.sql("SELECT max(day) FROM raw").fetchone()[0]
+train_last = con.sql(
+    f"SELECT DATE '{last_day}' - INTERVAL {VAL_DAYS + TEST_DAYS} DAY"
+).fetchone()[0]
+
 con.sql(f"""
-    CREATE TABLE bots AS
+    CREATE TABLE bots_all AS
     SELECT user_id FROM raw GROUP BY user_id
     HAVING count(*) >= {BOT_MIN_EVENTS}
        AND count(*) FILTER (WHERE event IN ('addtocart', 'transaction')) = 0
 """)
-print("Bots:", con.sql("SELECT count(*) FROM bots").fetchone()[0],
-      "| their events:", con.sql("SELECT count(*) FROM raw WHERE user_id IN (SELECT user_id FROM bots)").fetchone()[0])
+print("Bots before (full period):", con.sql("SELECT count(*) FROM bots_all").fetchone()[0],
+      "| their events:",
+      con.sql("SELECT count(*) FROM raw WHERE user_id IN (SELECT user_id FROM bots_all)").fetchone()[0])
+
+con.sql(f"""
+    CREATE TABLE bots AS
+    SELECT user_id FROM raw
+    WHERE day <= DATE '{train_last}'
+    GROUP BY user_id
+    HAVING count(*) >= {BOT_MIN_EVENTS}
+       AND count(*) FILTER (WHERE event IN ('addtocart', 'transaction')) = 0
+""")
+print("Train last day:", train_last)
+print("Bots after (train only):", con.sql("SELECT count(*) FROM bots").fetchone()[0],
+      "| their events:",
+      con.sql("SELECT count(*) FROM raw WHERE user_id IN (SELECT user_id FROM bots)").fetchone()[0])
 
 con.sql("CREATE TABLE ev AS SELECT * FROM raw WHERE user_id NOT IN (SELECT user_id FROM bots)")
 con.sql("COPY ev TO 'data/events_clean.parquet' (FORMAT parquet)")
@@ -55,7 +77,6 @@ con.sql("""
     SELECT item_id, arg_min(category_id, ts) AS category_id FROM item_cat GROUP BY item_id
 """)
 
-last_day = con.sql("SELECT max(day) FROM examples").fetchone()[0]
 con.sql(f"""
     CREATE TABLE dataset AS
     SELECT e.user_id, e.item_id, e.day, e.label,

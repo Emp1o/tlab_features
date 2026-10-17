@@ -6,7 +6,10 @@ from sklearn.metrics import log_loss, roc_auc_score
 def _rank_groups(df, score_col, seed=0):
     """Yield label arrays ordered by score; ties are broken randomly."""
     rng = np.random.default_rng(seed)
-    for _, g in df[df["rank_group"]].groupby(["user_id", "day"]):
+    ranked = df[df["rank_group"]]
+    for _, g in ranked.groupby(["user_id", "day"], sort=True):
+        # Same item_id always receives the same tie-break draw.
+        g = g.sort_values("item_id")
         noise = rng.random(len(g))
         order = np.lexsort((noise, -g[score_col].to_numpy()))
         yield g["label"].to_numpy()[order]

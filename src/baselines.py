@@ -30,8 +30,10 @@ df = con.sql(f"""
     LEFT JOIN 'data/features_manual.parquet' f
       ON f.user_id = ex.user_id AND f.item_id = ex.item_id AND f.day = ex.day
     GROUP BY ex.user_id, ex.item_id, ex.day, ex.label, ex.rank_group
+    ORDER BY ex.user_id, ex.item_id, ex.day
 """).df()
 
+# One draw per row position, so the frame must arrive in a fixed order.
 df["random"] = np.random.default_rng(0).random(len(df))
 
 rows = {

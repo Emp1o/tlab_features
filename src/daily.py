@@ -1,11 +1,11 @@
 import duckdb
 
-DAY_SHIFT_MS = 3 * 3600 * 1000  # same day boundary as prepare.py: 03:00 UTC
+DAY_SHIFT_MS = 3 * 3600 * 1000  # та же граница суток, что в prepare.py: 03:00 UTC
 
 con = duckdb.connect()
 
-# One row per entity per day. Later features sum these rows over a window
-# instead of scanning the raw event log for every example.
+# Одна строка на сущность и день. Признаки суммируют эти строки по окну,
+# а не сканируют сырой лог для каждого примера.
 COUNTS = """
     count(*) FILTER (WHERE event = 'view') AS views,
     count(*) FILTER (WHERE event = 'addtocart') AS carts,
@@ -31,9 +31,8 @@ for name, keys in (
     n = con.sql(f"SELECT count(*) FROM 'data/{name}.parquet'").fetchone()[0]
     print(f"{name}: {n} rows")
 
-# Category known at or before the start of the event's day (same ASOF as prepare.py).
-# Events with no such category are left out: a later feature must not fill them
-# with a category that was recorded only in the future.
+# Категория, известная к началу дня события (тот же ASOF, что в prepare.py).
+# События без такой категории выбрасываем: иначе признак мог бы взять категорию из будущего.
 con.sql("""
     CREATE TABLE item_cat AS
     SELECT item_id, ts, category_id

@@ -4,9 +4,12 @@ from sklearn.metrics import log_loss, roc_auc_score
 
 
 def _rank_groups(df, score_col, seed=0):
-    """Yield label arrays ordered by score; ties are broken randomly."""
+    """Метки в порядке убывания оценки; ничья разрывается случайно."""
     rng = np.random.default_rng(seed)
-    for _, g in df[df["rank_group"]].groupby(["user_id", "day"]):
+    ranked = df[df["rank_group"]]
+    for _, g in ranked.groupby(["user_id", "day"], sort=True):
+        # Один и тот же item_id всегда получает один и тот же жребий.
+        g = g.sort_values("item_id")
         noise = rng.random(len(g))
         order = np.lexsort((noise, -g[score_col].to_numpy()))
         yield g["label"].to_numpy()[order]
@@ -26,7 +29,7 @@ def recall_at_k(labels, k):
 
 
 def evaluate(df, score_col, is_probability=False):
-    """Classification metrics on all rows, ranking metrics on rank groups."""
+    """Классификация по всем строкам, ранжирование только по группам."""
     res = {"AUC": roc_auc_score(df["label"], df[score_col])}
     if is_probability:
         res["logloss"] = log_loss(df["label"], df[score_col])
@@ -39,6 +42,6 @@ def evaluate(df, score_col, is_probability=False):
 
 
 if __name__ == "__main__":
-    # Hits at positions 1 and 4 out of 5: expected NDCG@5 ≈ 0.877
+    # Попадания на позициях 1 и 4 из 5: ожидаемый NDCG@5 ≈ 0.877
     labels = np.array([1, 0, 0, 1, 0])
     print("NDCG@5 toy:", round(ndcg_at_k(labels, 5), 3))

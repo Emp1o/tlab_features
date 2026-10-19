@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 EVENTS = ROOT / "data" / "events_clean.parquet"
 FEATURES = ROOT / "data" / "features_manual.parquet"
 SEED = 0
-# Same sentinel as features_manual.py: no prior view is stored as 999, not NULL.
+# То же значение, что в features_manual.py: не было просмотра — 999, не NULL.
 RECENCY_MISSING = 999
 
 
@@ -79,7 +79,7 @@ def test_features_match_events():
 
 
 def test_pair_features_ignore_same_day_events():
-    """A pair whose only events are on day D must not see those events in its features."""
+    """У пары, чьи события только в день D, эти события не входят в признаки."""
     con = duckdb.connect()
     n_pairs, n_bad = con.sql(f"""
         WITH pair_days AS (

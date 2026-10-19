@@ -22,6 +22,9 @@ CATEGORY_ALL_BUY_COUNT = "category_all__transaction__30__count"
 CATEGORY_ALL_REPEAT_SHARE = "category_all__transaction__repeat_share"
 # Дни с последней покупки пользователя в категории товара. Не покупал — NULL.
 USER_CATEGORY_BUY_RECENCY = "user_category__transaction__all__recency"
+# Наличие товара: последнее значение и число смен 0↔1 строго до начала дня.
+ITEM_AVAILABLE = "item__available__asof"
+ITEM_AVAILABLE_SWITCHES = "item__available__switches"
 # Меньше 5 покупок в истории категории: (повторные + 1) / (покупки + 2).
 REPEAT_RAW_MIN = 5
 
@@ -280,6 +283,74 @@ def add_user_category_purchase_features(con):
     print("user-category purchases:", n_feat)
 
 
+def add_availability_features(con):
+    """Наличие товара по снимкам available строго до начала дня группы.
+
+    Значение — последний снимок с timestamp < 03:00 дня D. Число переключений —
+    сколько соседних таких снимков сменили 0 на 1 или 1 на 0. Снимка нет — оба NULL.
+    Снимок ровно в 03:00 дня D и более поздние не входят.
+    """
+    con.sql("""
+        CREATE TABLE avail_raw AS
+        SELECT itemid AS item_id, timestamp AS ts, TRY_CAST(value AS INTEGER) AS available
+        FROM read_csv_auto(
+            ['data/item_properties_part1.csv', 'data/item_properties_part2.csv'],
+            types={'value': 'VARCHAR', 'property': 'VARCHAR'}
+        )
+        WHERE property = 'available'
+    """)
+    conflicts = con.sql("""
+        SELECT count(*) FROM (
+            SELECT item_id, ts
+            FROM avail_raw
+            WHERE available IN (0, 1)
+            GROUP BY 1, 2
+            HAVING count(DISTINCT available) > 1
+        )
+    """).fetchone()[0]
+    if conflicts:
+        raise SystemExit(f"у available несколько значений в один timestamp: {conflicts}")
+    con.sql("""
+        CREATE TABLE avail AS
+        SELECT item_id, ts, min(available) AS available
+        FROM avail_raw
+        WHERE available IN (0, 1)
+        GROUP BY item_id, ts
+        ORDER BY item_id, ts
+    """)
+    con.sql("""
+        CREATE TABLE avail_cum AS
+        SELECT item_id, ts, available,
+               sum(CASE WHEN prev IS NULL OR prev = available THEN 0 ELSE 1 END)
+                   OVER (PARTITION BY item_id ORDER BY ts) AS switches
+        FROM (
+            SELECT item_id, ts, available,
+                   lag(available) OVER (PARTITION BY item_id ORDER BY ts) AS prev
+            FROM avail
+        )
+        ORDER BY item_id, ts
+    """)
+    con.sql(f"""
+        CREATE TABLE feat_available AS
+        SELECT ex.user_id, ex.item_id, ex.day,
+               a.available::DOUBLE AS {ITEM_AVAILABLE},
+               CASE WHEN a.item_id IS NULL THEN NULL ELSE a.switches::DOUBLE END
+                   AS {ITEM_AVAILABLE_SWITCHES}
+        FROM (
+            SELECT user_id, item_id, day,
+                   epoch_ms(CAST(day AS TIMESTAMP)) + {DAY_SHIFT_MS} AS day_start_ms
+            FROM ex
+        ) ex
+        ASOF LEFT JOIN avail_cum a
+          ON ex.item_id = a.item_id AND ex.day_start_ms > a.ts
+    """)
+    n_feat = con.sql("SELECT count(*) FROM feat_available").fetchone()[0]
+    n_ex = con.sql("SELECT count(*) FROM ex").fetchone()[0]
+    if n_feat != n_ex:
+        raise SystemExit(f"availability features row count {n_feat} != examples {n_ex}")
+    print("availability:", n_feat)
+
+
 def main():
     con = duckdb.connect()
     con.sql("SET preserve_insertion_order = false")
@@ -408,6 +479,7 @@ def main():
         GROUP BY item_id, day
     """)
     print("category changes:", con.sql("SELECT count(*) FROM item_changed").fetchone()[0])
+    add_availability_features(con)
 
     feature_sql = []
     for who, *_ in specs:
@@ -429,6 +501,8 @@ def main():
         f"f_ucat.{CATEGORY_ALL_BUY_COUNT}",
         f"f_ucat.{CATEGORY_ALL_REPEAT_SHARE}",
         f"f_ucat.{USER_CATEGORY_BUY_RECENCY}",
+        f"f_av.{ITEM_AVAILABLE}",
+        f"f_av.{ITEM_AVAILABLE_SWITCHES}",
     ])
 
     con.sql(f"""
@@ -441,6 +515,7 @@ def main():
             JOIN feat_user_item f_user_item USING (user_id, item_id, day)
             JOIN feat_category f_category USING (user_id, item_id, day)
             JOIN feat_user_category f_ucat USING (user_id, item_id, day)
+            JOIN feat_available f_av USING (user_id, item_id, day)
             LEFT JOIN item_changed ch
               ON ch.item_id = ex.item_id AND ch.day = ex.day
         ) TO '{CANDIDATES_PATH}' (FORMAT parquet)
@@ -479,6 +554,9 @@ def main():
                 {USER_CATEGORY_BUY_COUNT} > 0
                 AND ({USER_CATEGORY_BUY_RECENCY} IS NULL OR {USER_CATEGORY_BUY_RECENCY} > 30)
            )
+           OR ({ITEM_AVAILABLE} IS NULL) <> ({ITEM_AVAILABLE_SWITCHES} IS NULL)
+           OR {ITEM_AVAILABLE} NOT IN (0, 1)
+           OR {ITEM_AVAILABLE_SWITCHES} < 0
     """).fetchone()[0]
     if bad:
         raise SystemExit(f"feature sanity check failed on {bad} rows")

@@ -11,6 +11,8 @@ from feature_generator import (
     CATEGORY_ALL_BUY_COUNT,
     CATEGORY_ALL_REPEAT_SHARE,
     REPEAT_RAW_MIN,
+    ITEM_AVAILABLE,
+    ITEM_AVAILABLE_SWITCHES,
     USER_CATEGORY_BUY_COUNT,
     USER_CATEGORY_BUY_RECENCY,
     USER_CATEGORY_BUY_SHARE,
@@ -492,3 +494,71 @@ def test_user_category_recency_does_not_leak():
     assert n_unknown == 0
     assert n_never > 0
     assert n_known > 0
+
+
+def test_availability_does_not_use_same_day_snapshot():
+    """available и число смен 0↔1 смотрят только снимки строго до 03:00 дня группы."""
+    con = duckdb.connect()
+    con.sql("""
+        CREATE TABLE avail AS
+        SELECT itemid AS item_id, timestamp AS ts, TRY_CAST(value AS INTEGER) AS available
+        FROM read_csv_auto(
+            ['data/item_properties_part1.csv', 'data/item_properties_part2.csv'],
+            types={'value': 'VARCHAR', 'property': 'VARCHAR'}
+        )
+        WHERE property = 'available' AND TRY_CAST(value AS INTEGER) IN (0, 1)
+        ORDER BY item_id, ts
+    """)
+    con.sql("""
+        CREATE TABLE avail_cum AS
+        SELECT item_id, ts, available,
+               sum(CASE WHEN prev IS NULL OR prev = available THEN 0 ELSE 1 END)
+                   OVER (PARTITION BY item_id ORDER BY ts) AS switches
+        FROM (
+            SELECT item_id, ts, available,
+                   lag(available) OVER (PARTITION BY item_id ORDER BY ts) AS prev
+            FROM avail
+        )
+        ORDER BY item_id, ts
+    """)
+    con.sql(f"""
+        CREATE TABLE rows AS
+        SELECT e.user_id, e.item_id, e.day,
+               epoch_ms(CAST(e.day AS TIMESTAMP)) + {DAY_SHIFT_MS} AS day_start,
+               c.{ITEM_AVAILABLE} AS got_av,
+               c.{ITEM_AVAILABLE_SWITCHES} AS got_sw
+        FROM '{EXAMPLES}' e
+        JOIN '{CANDIDATES}' c USING (user_id, item_id, day)
+        WHERE e.split IN ('train', 'val')
+    """)
+    stats = con.sql("""
+        WITH strict AS (
+            SELECT r.*, a.available AS exp_av, a.switches AS exp_sw
+            FROM rows r
+            ASOF LEFT JOIN avail_cum a
+              ON r.item_id = a.item_id AND r.day_start > a.ts
+        ),
+        inclusive AS (
+            SELECT r.user_id, r.item_id, r.day, a.available AS inc_av, a.switches AS inc_sw
+            FROM rows r
+            ASOF LEFT JOIN avail_cum a
+              ON r.item_id = a.item_id AND r.day_start >= a.ts
+        )
+        SELECT
+            (SELECT count(*) FROM strict
+             WHERE got_av IS DISTINCT FROM exp_av OR got_sw IS DISTINCT FROM exp_sw),
+            (SELECT count(*) FROM strict s
+             JOIN inclusive i USING (user_id, item_id, day)
+             WHERE s.exp_av IS DISTINCT FROM i.inc_av OR s.exp_sw IS DISTINCT FROM i.inc_sw),
+            (SELECT count(*) FROM strict WHERE exp_av IS NULL),
+            (SELECT count(*) FROM strict WHERE exp_sw > 0),
+            (SELECT count(*) FROM strict s
+             JOIN inclusive i USING (user_id, item_id, day)
+             WHERE i.inc_sw = s.exp_sw + 1)
+    """).fetchone()
+    n_bad, n_same_day, n_missing, n_switched, n_same_day_flip = stats
+    assert n_bad == 0
+    assert n_same_day > 0
+    assert n_missing > 0
+    assert n_switched > 0
+    assert n_same_day_flip > 0

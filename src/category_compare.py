@@ -13,6 +13,8 @@ from baseline_diffs import baseline_scores
 from feature_generator import (
     CATEGORY_ALL_BUY_COUNT,
     CATEGORY_ALL_REPEAT_SHARE,
+    ITEM_AVAILABLE,
+    ITEM_AVAILABLE_SWITCHES,
     USER_CATEGORY_BUY_COUNT,
     USER_CATEGORY_BUY_RECENCY,
     USER_CATEGORY_BUY_SHARE,
@@ -38,11 +40,14 @@ from train_lgbm import (
 OUT_PATH = ROOT / "report" / "category_comparison.csv"
 RECENCY_OUT_PATH = ROOT / "report" / "category_recency_comparison.csv"
 RATES_PATH = ROOT / "report" / "category_recency_rates.csv"
+AVAIL_OUT_PATH = ROOT / "report" / "availability_comparison.csv"
 SELECTION_DIFF_PATH = ROOT / "report" / "category_selection_diff.csv"
 SELECTION_PATH = ROOT / "report" / "feature_selection.csv"
 PERSONAL_FEATURES = (USER_CATEGORY_BUY_COUNT, USER_CATEGORY_BUY_SHARE)
 CATEGORY_FEATURES = (CATEGORY_ALL_BUY_COUNT, CATEGORY_ALL_REPEAT_SHARE)
-NEW_FEATURES = PERSONAL_FEATURES + CATEGORY_FEATURES + (USER_CATEGORY_BUY_RECENCY,)
+EARLIER_FEATURES = PERSONAL_FEATURES + CATEGORY_FEATURES + (USER_CATEGORY_BUY_RECENCY,)
+AVAIL_FEATURES = (ITEM_AVAILABLE, ITEM_AVAILABLE_SWITCHES)
+NEW_FEATURES = EARLIER_FEATURES + AVAIL_FEATURES
 
 # Набор A до шага 4, порядок силы из feature_selection.csv того прогона.
 A_OLD = (
@@ -103,8 +108,10 @@ def model_sets(all_features, selected):
     a_old_cat = a_old + list(PERSONAL_FEATURES + CATEGORY_FEATURES)
     a_old_recency = a_old + [USER_CATEGORY_BUY_RECENCY]
     a_old_recency_category = a_old_recency + list(CATEGORY_FEATURES)
-    a_old_all5 = a_old + list(NEW_FEATURES)
-    missing = [name for name in a_old_all5 + a_new if name not in known]
+    a_old_all5 = a_old + list(EARLIER_FEATURES)
+    a_old_available = a_old + [ITEM_AVAILABLE]
+    a_old_avail_switch = a_old + list(AVAIL_FEATURES)
+    missing = [name for name in a_old_avail_switch + a_new + list(NEW_FEATURES) if name not in known]
     if missing:
         raise RuntimeError(f"в кандидатах нет признаков: {missing}")
     return {
@@ -116,6 +123,8 @@ def model_sets(all_features, selected):
         "A_old_recency": a_old_recency,
         "A_old_recency_category": a_old_recency_category,
         "A_old_all5": a_old_all5,
+        "A_old_available": a_old_available,
+        "A_old_avail_switch": a_old_avail_switch,
         "C_new": list(all_features),
     }
 
@@ -321,27 +330,63 @@ def train_sets(sets, frame, names, pairs, out_path):
     return report
 
 
+def available_group_variation():
+    """Доля 617 групп val, где available as-of не одинаковый у всех товаров.
+
+    NULL считается отдельным значением. Test не читается.
+    """
+    con = duckdb.connect()
+    groups, differ = con.sql(f"""
+        WITH rows AS (
+            SELECT e.user_id, e.day, c.{ITEM_AVAILABLE} AS available
+            FROM '{EXAMPLES_PATH}' e
+            JOIN '{CANDIDATES_PATH}' c USING (user_id, item_id, day)
+            WHERE e.split = 'val' AND e.rank_group
+        ),
+        grouped AS (
+            SELECT user_id, day,
+                   count(DISTINCT coalesce(available, -1)) AS n_values
+            FROM rows
+            GROUP BY 1, 2
+        )
+        SELECT count(*), count(*) FILTER (WHERE n_values > 1)
+        FROM grouped
+    """).fetchone()
+    if groups != 617:
+        raise RuntimeError(f"ожидались 617 групп val, получилось {groups}")
+    return groups, differ
+
+
 def main():
     all_features = candidate_names()
-    sets = model_sets(all_features, selected_names())
+    selected = selected_names()
+    sets = model_sets(all_features, selected)
     frame = load_modeling_frame(all_features)
-    train_sets(
-        sets,
-        frame,
-        RECENCY_MODELS,
-        RECENCY_PAIRS,
-        RECENCY_OUT_PATH,
-    )
-    rates = purchase_rates()
-    rates.to_csv(RATES_PATH, index=False)
+    names = ["A_old", "A_old_available", "A_old_avail_switch"]
+    a_changed = set(selected) != set(A_OLD)
+    if a_changed:
+        names.append("A_new")
+    names.append("C_new")
+    pairs = []
+    for name in names:
+        if name == "A_old":
+            continue
+        pairs.append((name, "A_old", f"{name}-A_old"))
+        pairs.append((name, "popularity", f"{name}-popularity"))
+    train_sets(sets, frame, names, pairs, AVAIL_OUT_PATH)
+    groups, differ = available_group_variation()
     changed, threshold, passed = selection_diff()
     changed.to_csv(SELECTION_DIFF_PATH, index=False)
     cover = coverage()
     print(f"порог: {threshold:.6f}")
     print(f"в A_new: {len(passed)}")
+    print(f"A_new отличается: {a_changed}")
+    print(f"групп с разным available: {differ} / {groups} = {differ / groups:.6f}")
     print(cover.to_string(index=False))
     print(changed.to_string(index=False))
-    print(rates.to_string(index=False))
+    if a_changed:
+        print("состав A_new:")
+        print("\n".join(selected))
 
 
 if __name__ == "__main__":

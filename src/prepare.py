@@ -1,6 +1,6 @@
 import duckdb
 
-DAY_SHIFT_MS = 3 * 3600 * 1000  # days run from 03:00 to 03:00 UTC
+DAY_SHIFT_MS = 3 * 3600 * 1000  # сутки с 03:00 до 03:00 UTC
 BOT_MIN_EVENTS = 200
 VAL_DAYS, TEST_DAYS = 14, 14
 
@@ -13,9 +13,9 @@ con.sql(f"""
     FROM read_csv_auto('data/events.csv')
 """)
 
-# Split bounds come from the full log, before any bot filter. The bot rule itself
-# may use only train days: a cart on val/test is a future label, and using it to
-# decide who is a bot would leak that label into every split.
+# Границы сплита берутся из всего лога, до фильтра ботов. Правило бота смотрит
+# только на train: корзина на val или test — будущая метка, по ней нельзя решать,
+# кого выкидывать из всех частей.
 last_day = con.sql("SELECT max(day) FROM raw").fetchone()[0]
 train_last = con.sql(
     f"SELECT DATE '{last_day}' - INTERVAL {VAL_DAYS + TEST_DAYS} DAY"
@@ -47,7 +47,7 @@ print("Bots after (train only):", con.sql("SELECT count(*) FROM bots").fetchone(
 con.sql("CREATE TABLE ev AS SELECT * FROM raw WHERE user_id NOT IN (SELECT user_id FROM bots)")
 con.sql("COPY ev TO 'data/events_clean.parquet' (FORMAT parquet)")
 
-# Item category change log: category value and the moment it became known
+# Журнал категории: значение и момент, когда оно стало известно
 con.sql("""
     CREATE TABLE item_cat AS
     SELECT itemid AS item_id, timestamp AS ts, TRY_CAST(value AS INTEGER) AS category_id
@@ -65,7 +65,7 @@ con.sql("""
     FROM ev GROUP BY user_id, item_id, day
 """)
 
-# Category known before the start of the example's day; earliest known value as fallback
+# Категория, известная до начала дня примера; самое раннее значение — запасное
 con.sql(f"""
     CREATE TABLE examples_cat AS
     SELECT e.*, c.category_id AS cat_asof
@@ -88,7 +88,7 @@ con.sql(f"""
     FROM examples_cat e LEFT JOIN first_cat f USING (item_id)
 """)
 
-# Groups used for ranking metrics: at least 2 items and at least one positive
+# Группы для метрик ранжирования: хотя бы 2 товара и хотя бы один положительный
 con.sql("""
     CREATE TABLE dataset_final AS
     SELECT d.*, (g.n_items >= 2 AND g.n_pos >= 1) AS rank_group

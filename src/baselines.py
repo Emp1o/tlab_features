@@ -33,7 +33,7 @@ df = con.sql(f"""
     ORDER BY ex.user_id, ex.item_id, ex.day
 """).df()
 
-# One draw per row position, so the frame must arrive in a fixed order.
+# Случайное число выдаётся по позиции строки, поэтому порядок строк фиксирован.
 df["random"] = np.random.default_rng(0).random(len(df))
 
 rows = {

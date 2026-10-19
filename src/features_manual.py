@@ -1,7 +1,7 @@
 import duckdb
 
-# No event before day D. 999 is past the 138-day span of the log, so "never"
-# stays distinguishable from a real gap and is not stored as NULL.
+# События до дня D не было. 999 больше длины лога (138 дней), поэтому «никогда»
+# не путается с реальной паузой и не хранится как NULL.
 RECENCY_MISSING = 999
 
 con = duckdb.connect()
@@ -9,11 +9,10 @@ con.sql("CREATE TABLE ex AS SELECT * FROM 'data/examples.parquet'")
 
 
 def prefix(name, path, keys, metrics):
-    """Cumulative sums ordered by day.
+    """Накопленные суммы по дням.
 
-    The total on [D-w, D) is the prefix at the last day before D minus the
-    prefix at the last day before D-w. ASOF finds those two days, so we never
-    join every past day to every example.
+    Сумма на [D-w, D) — префикс последнего дня до D минус префикс последнего дня
+    до D-w. ASOF находит эти два дня, без соединения каждого прошлого дня с каждым примером.
     """
     key_sql = ", ".join(keys)
     metric_sql = ", ".join(metrics)
@@ -120,9 +119,8 @@ con.sql(f"""
 """)
 print("feat_ui:", con.sql("SELECT count(*) FROM feat_ui").fetchone()[0])
 
-# Numbers are filled for every row. Rows whose category was not known before
-# day D are turned back to NULL in the final SELECT: a fallback category comes
-# from a property record written after that day.
+# Числа считаются для всех строк. Если категория не была известна до дня D,
+# в финальном SELECT они снова NULL: запасная категория взята из более поздней записи.
 con.sql(f"""
     CREATE TABLE feat_uc AS
     SELECT ex.user_id, ex.item_id, ex.day,

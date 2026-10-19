@@ -183,16 +183,26 @@ def feature_names(con):
     return [row[0] for row in described if row[0] not in KEYS]
 
 
-def main():
+def train_filter(last_day=None):
+    """split='train'. last_day отсекает дни строго после этой даты, включая val2."""
+    if last_day is None:
+        return "e.split = 'train'"
+    return f"e.split = 'train' AND e.day <= DATE '{last_day}'"
+
+
+def run_selection(last_day=None, report_path=REPORT_PATH):
     import duckdb
 
+    if last_day is not None and str(report_path) == str(REPORT_PATH):
+        raise RuntimeError("отбор с окном не перезаписывает report/feature_selection.csv")
+    where = train_filter(last_day)
     con = duckdb.connect()
     # Метки val и test не читаем: порог считается только по train.
     names = feature_names(con)
-    keys = con.sql("""
+    keys = con.sql(f"""
         SELECT user_id, day, label
-        FROM 'data/examples.parquet'
-        WHERE split = 'train'
+        FROM 'data/examples.parquet' e
+        WHERE {where}
         ORDER BY user_id, day, item_id
     """).fetchnumpy()
     y = np.asarray(keys["label"], dtype=np.int8)
@@ -209,7 +219,7 @@ def main():
             SELECT {quoted}
             FROM 'data/examples.parquet' e
             JOIN '{CANDIDATES_PATH}' c USING (user_id, item_id, day)
-            WHERE e.split = 'train'
+            WHERE {where}
             ORDER BY e.user_id, e.day, e.item_id
         """).fetchnumpy()
         if len(frame[batch[0]]) != len(y):
@@ -234,7 +244,7 @@ def main():
             SELECT {quoted}
             FROM 'data/examples.parquet' e
             JOIN '{CANDIDATES_PATH}' c USING (user_id, item_id, day)
-            WHERE e.split = 'train'
+            WHERE {where}
             ORDER BY e.user_id, e.day, e.item_id
         """).fetchnumpy()
         filled = {name: impute_train(frame[name]) for name in strong_names}
@@ -243,12 +253,25 @@ def main():
     table, threshold = decide(
         names, global_aucs, group_aucs, n_groups, constant_in_group, filled
     )
-    table.to_csv(REPORT_PATH, index=False)
+    table.to_csv(report_path, index=False)
+    return table, threshold
+
+
+def main():
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--last-day", default=None)
+    parser.add_argument("--report", default=REPORT_PATH)
+    args = parser.parse_args()
+    table, threshold = run_selection(args.last_day, args.report)
 
     n_below = int((table["причина"] == "ниже порога").sum())
     n_dup = int(table["причина"].str.startswith("дубль").sum())
     kept = table[table["прошёл"] == 1]
-    print(f"кандидатов: {len(names)}")
+    print(f"кандидатов: {len(table)}")
+    print(f"окно: {args.last_day or 'весь train'}")
+    print(f"файл: {args.report}")
     print(f"порог: {threshold:.6f}")
     print(f"ниже порога: {n_below}")
     print(f"дублей: {n_dup}")

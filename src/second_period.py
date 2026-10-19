@@ -86,9 +86,9 @@ def frozen_lists_match_selection():
         raise RuntimeError("добавка к A_new не совпала с семью признаками шага 4")
 
 
-def load_frame():
+def load_frame(extra_features=()):
     """Train и первый val. Строки test в запрос не входят."""
-    columns = sorted(set(A_NEW_PLUS))
+    columns = sorted(set(A_NEW_PLUS) | set(extra_features))
     quoted = ", ".join(f'c."{name}"::FLOAT AS "{name}"' for name in columns)
     con = duckdb.connect()
     frame = con.sql(f"""
@@ -124,9 +124,16 @@ def slice_period(frame, train_last, val_first, val_last, val_split):
     return train, val
 
 
-def fit_seed(train, val, features, seed):
+def fit_seed(train, val, features, seed, n_rounds=None):
+    """Ранняя остановка на val, либо ровно n_rounds деревьев без меток val."""
     params = dict(PARAMS)
     params["random_state"] = seed
+    if n_rounds is not None:
+        params["n_estimators"] = int(n_rounds)
+        model = lgb.LGBMClassifier(**params)
+        model.fit(train[features], train["label"].to_numpy())
+        scores = model.predict_proba(val[features], num_iteration=int(n_rounds))[:, 1]
+        return scores, int(n_rounds)
     model = lgb.LGBMClassifier(**params)
     model.fit(
         train[features],
@@ -142,7 +149,7 @@ def fit_seed(train, val, features, seed):
     return scores, int(model.best_iteration_ or 0)
 
 
-def average_scores(train, val, features):
+def average_scores(train, val, features, n_rounds=None):
     """Среднее вероятностей пяти сидов и NDCG@3 каждого сида."""
     columns = sorted(features)
     total = None
@@ -150,7 +157,7 @@ def average_scores(train, val, features):
     iterations = []
     for seed in SEEDS:
         print(f"  сид {seed}", flush=True)
-        scores, iteration = fit_seed(train, val, columns, seed)
+        scores, iteration = fit_seed(train, val, columns, seed, n_rounds=n_rounds)
         grouped = per_group_metrics(val, scores, seed=TIE_SEED)
         seed_ndcg.append(float(grouped["ndcg3"].mean()))
         iterations.append(iteration)
@@ -216,18 +223,33 @@ def metric_row(period, name, val, scores, tie_seed, n_features, iterations):
 
 
 def history_note():
-    """Сколько дней train2 не набирают 30 суток истории. Val2 набирает."""
+    """Строки train2 и val2, у которых до дня группы меньше 30 суток от первого события.
+
+    Первое событие — min(day) в events_clean с day не позже конца train2.
+    Val1 и test в этот запрос не входят. Раньше счётчик val2 требовал день
+    одновременно в августе и раньше 2015-06-02, поэтому был тождественно 0.
+    """
     con = duckdb.connect()
-    train_short, val_short = con.sql(f"""
+    train_short, val_short, first_day = con.sql(f"""
+        WITH bounds AS (
+            SELECT min(day) AS first_day
+            FROM '{EVENTS_PATH}'
+            WHERE day <= DATE '{TRAIN2_LAST}'
+        )
         SELECT
-            (SELECT count(*) FROM '{EXAMPLES_PATH}'
-             WHERE split = 'train' AND day < DATE '2015-06-02'),
-            (SELECT count(*) FROM '{EXAMPLES_PATH}'
-             WHERE split = 'train'
-               AND day BETWEEN DATE '{VAL2_FIRST}' AND DATE '{VAL2_LAST}'
-               AND day < DATE '2015-06-02')
+            (SELECT count(*)
+             FROM '{EXAMPLES_PATH}' e, bounds b
+             WHERE e.split = 'train'
+               AND e.day BETWEEN DATE '{TRAIN2_FIRST}' AND DATE '{TRAIN2_LAST}'
+               AND e.day < b.first_day + INTERVAL 30 DAY),
+            (SELECT count(*)
+             FROM '{EXAMPLES_PATH}' e, bounds b
+             WHERE e.split = 'train'
+               AND e.day BETWEEN DATE '{VAL2_FIRST}' AND DATE '{VAL2_LAST}'
+               AND e.day < b.first_day + INTERVAL 30 DAY),
+            (SELECT first_day FROM bounds)
     """).fetchone()
-    return int(train_short), int(val_short)
+    return int(train_short), int(val_short), first_day
 
 
 def evaluate_period(frame, period, train_last, val_first, val_last, val_split, event_last, manual_split):
@@ -312,7 +334,7 @@ def main():
         frame, "val1", "2015-08-20", VAL1_FIRST, VAL1_LAST, "val", VAL1_LAST, "val"
     )
     rows.extend(metrics + diffs + seeds)
-    train_short, val_short = history_note()
+    train_short, val_short, _first_day = history_note()
     rows.append({
         "record": "history",
         "period": "train2",

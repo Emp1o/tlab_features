@@ -103,22 +103,30 @@ def load_modeling_frame(feature_names):
     return frame
 
 
-def fit_model(train, val, features):
+def fit_model(train, val, features, n_rounds=None):
     ensure_train_rows(train)
-    ensure_val_rows(val)
-    model = lgb.LGBMClassifier(**PARAMS)
-    # Остановка по logloss на val. Test в eval_set не передаём.
-    model.fit(
-        train[features],
-        train["label"].to_numpy(),
-        eval_X=val[features],
-        eval_y=val["label"].to_numpy(),
-        callbacks=[
-            lgb.early_stopping(EARLY_STOPPING_ROUNDS, first_metric_only=True, verbose=False),
-            lgb.log_evaluation(0),
-        ],
-    )
-    scores = model.predict_proba(val[features], num_iteration=model.best_iteration_)[:, 1]
+    params = dict(PARAMS)
+    if n_rounds is None:
+        ensure_val_rows(val)
+        model = lgb.LGBMClassifier(**params)
+        # Остановка по logloss на val. Test в eval_set не передаём.
+        model.fit(
+            train[features],
+            train["label"].to_numpy(),
+            eval_X=val[features],
+            eval_y=val["label"].to_numpy(),
+            callbacks=[
+                lgb.early_stopping(EARLY_STOPPING_ROUNDS, first_metric_only=True, verbose=False),
+                lgb.log_evaluation(0),
+            ],
+        )
+        scores = model.predict_proba(val[features], num_iteration=model.best_iteration_)[:, 1]
+        return model, scores
+    # Фиксированное число деревьев. Метки оцениваемого окна в fit не входят.
+    params["n_estimators"] = int(n_rounds)
+    model = lgb.LGBMClassifier(**params)
+    model.fit(train[features], train["label"].to_numpy())
+    scores = model.predict_proba(val[features], num_iteration=int(n_rounds))[:, 1]
     return model, scores
 
 

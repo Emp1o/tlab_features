@@ -103,7 +103,15 @@ NULL у обоих признаков на val: 0.1152. В 261 из 617 груп
 
 Первый val, те же 617 групп и те же 5 сидов: A_new 0.6580 / 0.6870 / 0.6805 / 0.7744, A_new+7 0.6679 / 0.6969 / 0.6896 / 0.8255. Разницы: (A_new+7)−A_new 0.0099 (−0.0054–0.0247), A_new−popularity 0.0185 (−0.0030–0.0403), (A_new+7)−popularity 0.0284 (0.0054–0.0520). Сиды: A_new 0.6556–0.6612, A_new+7 0.6605–0.6703.
 
-Подробности: `report/results.md`, `report/second_period.csv`, `report/lgbm_comparison.csv`, `report/baseline_diffs.csv`, `report/category_comparison.csv`, `report/category_recency_comparison.csv`, `report/category_recency_rates.csv`, `report/availability_comparison.csv`, `report/feature_selection.csv`.
+Проверка Судьи, 19.10.2026. Test не читался. Итоговый набор остаётся A_new.
+
+Счётчик строк val2 с историей короче 30 дней требовал день одновременно в августе и раньше 2015-06-02, поэтому был тождественно 0. После исправления первое событие до конца train2 — 2015-05-03; train2 502 347, val2 0. Опубликованные числа те же. Повторный A_new на val2 с ранней остановкой совпал с таблицей выше.
+
+Тот же отборщик на train2 (2015-05-03 — 2015-08-06), основной `feature_selection.csv` не перезаписан. Порог 0.0450, прошло 23. Из A_new никто не выбыл. Добавились `user_item__transaction__7_30__trend` (сила 0.0485) и `user_item__transaction__1__count` (сила 0.0470). Jaccard 0.9130 (21/23). Val2, 589 групп, сиды 42–46, колонки по алфавиту, ранняя остановка: A_new 0.6767 / 0.7111 / 0.7058 / 0.7897, набор train2 0.6820 / 0.7155 / 0.7117 / 0.7892, popularity 0.6351 / 0.6743 / 0.6670 / 0.6146. Разницы NDCG@3, одни 1 000 индексов: набор train2 − A_new 0.0053 (0.0003–0.0106), A_new − popularity 0.0416 (0.0197–0.0645), набор train2 − popularity 0.0469 (0.0239–0.0703). Сиды набора train2: 0.6740–0.6849. Это проверка устойчивости, список A_new не заменяется.
+
+Число деревьев: медиана best_iteration A_new на val1 по сидам 42–46. Итерации 77, 80, 91, 84, 78, медиана 80. На val2 ровно 80 деревьев, без меток val2: A_new 0.6792 / 0.7149 / 0.7109 / 0.7899, A_new+7 0.6661 / 0.7030 / 0.6905 / 0.8369. Разницы: (A_new+7) − A_new −0.0131 (−0.0284–0.0015), A_new − popularity 0.0441 (0.0228–0.0672), (A_new+7) − popularity 0.0310 (0.0099–0.0529). Сиды: A_new 0.6742–0.6812, A_new+7 0.6642–0.6733. Старые цифры с ранней остановкой оставлены выше.
+
+Подробности: `report/results.md`, `report/second_period.csv`, `report/judge_review.csv`, `report/feature_selection_train2.csv`, `report/lgbm_comparison.csv`, `report/baseline_diffs.csv`, `report/category_comparison.csv`, `report/category_recency_comparison.csv`, `report/category_recency_rates.csv`, `report/availability_comparison.csv`, `report/feature_selection.csv`.
 
 ## Вывод Максима (19.10.2026)
 
@@ -193,13 +201,75 @@ A_new+7 — эти семь плюс A_new. `item__available__asof` уже вх�
 
 2. Наличие не помогает в ранжировании, так как польза от наличия перекрывается другими признаками в том числе и популярностью товара за последние 7 дней, поэтому сам признак наличия не так сильно влияет на ранжирование
 
+## Заморозка (FREEZE)
+
+Код: `SHA_PENDING`.
+
+A_NEW, 21 признак. Порядок обучения — имена по алфавиту. Список в порядке предрегистрации:
+
+1. `user_item__addtocart__1__count`
+2. `user_item__addtocart__7__count`
+3. `user_item__addtocart__30__count`
+4. `user_item__view__1__count`
+5. `user_item__view__7__count`
+6. `item__addtocart__14__count`
+7. `item__addtocart__30__count`
+8. `item__addtocart__7__count`
+9. `item__addtocart__1__count`
+10. `item__view__14__count`
+11. `item__view__1__count`
+12. `item__transaction__14__count`
+13. `item__transaction__30__count`
+14. `item__view__all__recency`
+15. `user_item__addtocart__7_30__trend`
+16. `item__transaction__7__count`
+17. `item__available__asof`
+18. `item__addtocart__all__recency`
+19. `user_item__addtocart__all__recency`
+20. `item__transaction__1__share`
+21. `user_item__view__7_30__trend`
+
+Параметры LightGBM, как `PARAMS` в `src/train_lgbm.py`, кроме числа деревьев и сида:
+
+- objective: binary
+- metric: binary_logloss
+- learning_rate: 0.05
+- num_leaves: 63
+- min_child_samples: 200
+- subsample: 0.8
+- subsample_freq: 1
+- colsample_bytree: 0.8
+- n_jobs: -1
+- verbosity: -1
+
+Число деревьев: 80. Медиана best_iteration A_new на val1 (2015-08-21 — 2015-09-03), обучение на train по 2015-08-20, ранняя остановка 50 раундов, сиды 42–46, итерации 77, 80, 91, 84, 78. На test ранней остановки нет.
+
+Сиды: 42, 43, 44, 45, 46. Метрика — среднее вероятностей. Ничья внутри группы — seed 42. Бутстреп A_new − popularity: 1 000 повторов, seed 42, квантили 2.5 и 97.5.
+
+Обучение test-прогона: `split = 'train'` и day ≤ 2015-08-20. Оценка: `split = 'test'`. Скрипт `scripts/run_test.py` написан и не запускался.
+
+sha256 входных файлов:
+
+| файл | sha256 |
+|---|---|
+| `data/events.csv` | `3745aa83238b1e6d44d8fda209807899f420084398f94ddf745f3cbcfecbf9e7` |
+| `data/category_tree.csv` | `94e865eb0a3d48cbbfe3b79079018dd92509315c88f5fd8d00d0b4b5af434f5b` |
+| `data/item_properties_part1.csv` | `30aad5aeca58b2dc27dcc73e1708565f5818e45adb3eb57401f91e87355b0b81` |
+| `data/item_properties_part2.csv` | `d5e7d1a91dc40f522aeb596b267e6c87d8aed689a7192d12369cfb165eb987e5` |
+| `data/examples.parquet` | `df688362ce67781bdfbfb7caae93e46e846b935966ad8d44f5523faeb3fd14c4` |
+| `data/events_clean.parquet` | `9c7681f46a7041653f6602dbe226d15327824c9c0d1a764d498c71bd91f01ad3` |
+| `data/feature_candidates.parquet` | `9b824f00e340644d51f82db5b059d135547121f734245cca73e1da41f141ad50` |
+| `data/features_manual.parquet` | `8d9f63080f3bf8d58f48f7600f1f26b24b6807b4cf56dde5662af63d23bea21b` |
+| `data/item_category.parquet` | `1adc9ff58c05306fe5ac48787a52543967cce3024ba2b2565f767f0dda485c0a` |
+
+Предрегистрация теста (гипотеза и текст вывода на оба исхода): ждёт Максима
+
 ## Следующие шаги
 
-1. Независимая проверка Судьёй.
-2. Заморозка списка признаков A_new и пайплайна.
-3. Один прогон на test: 5 сидов (42–46), порядок колонок по алфавиту, бутстреп против popularity.
-4. Отчёт с выводами Максима.
-5. Резюме к 25.10.
+1. Предрегистрация теста от Максима: гипотеза и текст вывода на оба исхода.
+2. Один прогон `scripts/run_test.py`: A_new, 80 деревьев, сиды 42–46, колонки по алфавиту, бутстреп против popularity. Скрипт ещё не запускался.
+3. Отчёт с выводами Максима.
+4. Резюме к 25.10.
 
 ## Журнал
 
@@ -211,3 +281,4 @@ A_new+7 — эти семь плюс A_new. `item__available__asof` уже вх�
 - 19.10.2026: признаки 6–7 — наличие as-of и число переключений; отбор со всеми 7, сравнение на 617 группах val.
 - 19.10.2026: второй период, val2 2015-08-07 — 2015-08-20, 589 групп. По предрегистрированному правилу выбран A_new.
 - 19.10.2026: выводы Максима по второму периоду записаны дословно. Итоговый набор — A_new (21 признак).
+- 19.10.2026: проверка Судьи. Счётчик истории val2 был тождественным нулём; после исправления числа те же, 502 347 и 0. Отбор на train2: 23 признака, Jaccard с A_new 0.9130. Фиксированные 80 деревьев — медиана val1. `scripts/run_test.py` написан и не запускался. Итоговый набор остаётся A_new.

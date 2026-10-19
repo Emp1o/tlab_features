@@ -1,0 +1,21 @@
+record,period,name,n_groups,note,ndcg_3,n_features,iterations,ndcg_3_seeds,ndcg_5,mrr,auc,protocol,ndcg_3_low,ndcg_3_high,ndcg_3_min,ndcg_3_max
+history,train2,rows_before_30d,502347.0,first_event_day=2015-05-03,,,,,,,,,,,,
+history,val2,rows_before_30d,0.0,first_event_day=2015-05-03,,,,,,,,,,,,
+selection,train2,threshold,,"user_item__addtocart__1__count,user_item__addtocart__7__count,user_item__addtocart__30__count,user_item__view__1__count,user_item__view__7__count,item__addtocart__14__count,item__addtocart__30__count,item__addtocart__7__count,item__view__14__count,item__addtocart__1__count,item__view__1__count,user_item__addtocart__7_30__trend,item__transaction__14__count,item__transaction__30__count,item__view__all__recency,item__transaction__7__count,user_item__addtocart__all__recency,item__addtocart__all__recency,user_item__view__7_30__trend,item__available__asof,item__transaction__1__share,user_item__transaction__7_30__trend,user_item__transaction__1__count",0.045028732684262385,23.0,,,,,,,,,,
+selection,train2,jaccard_vs_A_new,23.0,"dropped=; added=user_item__transaction__1__count,user_item__transaction__7_30__trend",0.9130434782608695,21.0,,,,,,,,,,
+rounds,val1,A_new_median_best_iteration,,"медиана best_iteration, сиды 42-46, ранняя остановка на val1",,80.0,"77,80,91,84,78","0.657227,0.655602,0.660620,0.661188,0.658413",,,,,,,,
+metrics,val2,A_new,589.0,,0.6766763790560388,21.0,"114,124,115,141,109",,0.7110789792587153,0.7057894993921005,0.7896590443407259,early_stop,,,,
+metrics,val2,train2_selected,589.0,,0.681967822225362,23.0,"122,136,136,136,144",,0.7155336519779648,0.7116631667379444,0.7891697240705552,early_stop,,,,
+metrics,val2,A_new,589.0,,0.6792409009398029,21.0,"80,80,80,80,80",,0.7149270400277828,0.7108857722413826,0.7899040647908352,fixed_rounds,,,,
+metrics,val2,A_new_plus,589.0,,0.6661390421124185,27.0,"80,80,80,80,80",,0.703036920567728,0.6905327722839647,0.8369094786474998,fixed_rounds,,,,
+metrics,val2,popularity,589.0,,0.6350918578937071,,,,0.6742779208230446,0.6670459242384391,0.614578898435134,baseline,,,,
+diff,val2,train2_selected-A_new,589.0,,0.005291443169323173,,,,,,,early_stop,0.00034384122694788025,0.01061897569866082,,
+diff,val2,A_new-popularity,589.0,,0.04158452116233169,,,,,,,early_stop_vs_baseline,0.01969874136332007,0.06449090119767899,,
+diff,val2,train2_selected-popularity,589.0,,0.04687596433165486,,,,,,,early_stop_vs_baseline,0.02389038399208781,0.07026782695033738,,
+diff,val2,A_new_plus-A_new,589.0,,-0.01310185882738446,,,,,,,fixed_rounds,-0.02836644797519691,0.0015354061082826827,,
+diff,val2,A_new-popularity,589.0,,0.04414904304609579,,,,,,,fixed_rounds_vs_baseline,0.022816555256175132,0.06720260546797745,,
+diff,val2,A_new_plus-popularity,589.0,,0.031047184218711332,,,,,,,fixed_rounds_vs_baseline,0.00985017649004696,0.052856958104679615,,
+seeds,val2,A_new,,,,,"114,124,115,141,109","0.676544,0.676962,0.674732,0.676321,0.678946",,,,early_stop,,,0.6747321130445311,0.6789463586125456
+seeds,val2,train2_selected,,,,,"122,136,136,136,144","0.682586,0.675648,0.684857,0.676718,0.674020",,,,early_stop,,,0.674020089333875,0.6848572082841146
+seeds,val2,A_new,,,,,"80,80,80,80,80","0.676887,0.681228,0.675627,0.674226,0.680863",,,,fixed_rounds,,,0.6742263578741906,0.6812283969473053
+seeds,val2,A_new_plus,,,,,"80,80,80,80,80","0.664746,0.673264,0.669514,0.672989,0.664217",,,,fixed_rounds,,,0.6642165927419014,0.673263641103626

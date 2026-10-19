@@ -98,6 +98,80 @@ NULL у обоих признаков на val: 0.1152. В 261 из 617 груп
 
 Существуют различные категории товаров, которые имеют свою специфику, например, покупка техники для дома(утюг, стиралка и прочее), эта категория сама по себе редкая (люди не покупают такие товары каждый месяц), значит можно по частоте покупок товаров какой-то категории понять, является она такой или нет, или наоборот есть категории товаров, которые заказывают часто (предметы одежды (те же самые носки)), поэтому товары таких категорий могут часто покупать, поэтому логичнее чаще предлагать такие товары (повод из-за категории поднять вероятность покупки для таких товаров)
 
+## Предрегистрация второго периода (Максим, 19.10.2026)
+
+Кандидаты заморожены. На втором периоде отборщик не запускается.
+
+A_new — 21 признак, помеченный «прошёл» в `report/feature_selection.csv`:
+
+1. `user_item__addtocart__1__count`
+2. `user_item__addtocart__7__count`
+3. `user_item__addtocart__30__count`
+4. `user_item__view__1__count`
+5. `user_item__view__7__count`
+6. `item__addtocart__14__count`
+7. `item__addtocart__30__count`
+8. `item__addtocart__7__count`
+9. `item__addtocart__1__count`
+10. `item__view__14__count`
+11. `item__view__1__count`
+12. `item__transaction__14__count`
+13. `item__transaction__30__count`
+14. `item__view__all__recency`
+15. `user_item__addtocart__7_30__trend`
+16. `item__transaction__7__count`
+17. `item__available__asof`
+18. `item__addtocart__all__recency`
+19. `user_item__addtocart__all__recency`
+20. `item__transaction__1__share`
+21. `user_item__view__7_30__trend`
+
+Семь новых признаков шага 4:
+
+1. `user_category__transaction__30__count`
+2. `user_category__transaction__30__share`
+3. `category_all__transaction__30__count`
+4. `category_all__transaction__repeat_share`
+5. `user_category__transaction__all__recency`
+6. `item__available__asof`
+7. `item__available__switches`
+
+A_new+7 — эти семь плюс A_new. `item__available__asof` уже входит в A_new, поэтому имён 27:
+
+1. `user_item__addtocart__1__count`
+2. `user_item__addtocart__7__count`
+3. `user_item__addtocart__30__count`
+4. `user_item__view__1__count`
+5. `user_item__view__7__count`
+6. `item__addtocart__14__count`
+7. `item__addtocart__30__count`
+8. `item__addtocart__7__count`
+9. `item__addtocart__1__count`
+10. `item__view__14__count`
+11. `item__view__1__count`
+12. `item__transaction__14__count`
+13. `item__transaction__30__count`
+14. `item__view__all__recency`
+15. `user_item__addtocart__7_30__trend`
+16. `item__transaction__7__count`
+17. `item__available__asof`
+18. `item__addtocart__all__recency`
+19. `user_item__addtocart__all__recency`
+20. `item__transaction__1__share`
+21. `user_item__view__7_30__trend`
+22. `user_category__transaction__30__count`
+23. `user_category__transaction__30__share`
+24. `category_all__transaction__30__count`
+25. `category_all__transaction__repeat_share`
+26. `user_category__transaction__all__recency`
+27. `item__available__switches`
+
+Правило: больший набор берём, только если 95% бутстреп-интервал разницы NDCG@3 (A_new+7 − A_new) на втором периоде целиком выше 0. Иначе A_new. Интервал — 1 000 бутстрепов групп, seed 42, квантили 2.5 и 97.5. «Целиком выше 0» значит нижняя граница > 0.
+
+Метрика модели — среднее предсказаний, не среднее метрик. Пять сидов LightGBM: 42, 43, 44, 45, 46. Остальные параметры как в `src/train_lgbm.py`, ранняя остановка на val этого периода. Порядок колонок один и тот же у всех сидов: имена по алфавиту. Предсказания пяти сидов усредняются, по среднему считаются NDCG, MRR и AUC. Ничья равных предсказаний внутри группы — seed 42.
+
+Окно зафиксировано сдвигом на длину текущего val (14 дней) назад, без пересечения с val 2015-08-21 — 2015-09-03 и без test. Val2: 2015-08-07 — 2015-08-20. Train2: 2015-05-03 — 2015-08-06. Train той же длины, что текущий, начинался бы 2015-04-19, раньше начала лога, поэтому train2 короче: все дни лога до val2. Окна признаков те же, что в генераторе: события строго до дня группы. Если до дня группы меньше 30 дней, окно короче и отдельной импутации нет.
+
 ## Следующие шаги
 
 1. Проверка на втором временном периоде.

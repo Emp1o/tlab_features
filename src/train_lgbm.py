@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 from sklearn.metrics import roc_auc_score
 
-from metrics import ndcg_at_k
+from metrics import ndcg_at_k, reciprocal_rank
 
 ROOT = Path(__file__).resolve().parents[1]
 EXAMPLES_PATH = ROOT / "data" / "examples.parquet"
@@ -122,25 +122,18 @@ def fit_model(train, val, features):
     return model, scores
 
 
-def reciprocal_rank(labels):
-    hits = np.flatnonzero(labels == 1)
-    if hits.size == 0:
-        return 0.0
-    return 1.0 / (hits[0] + 1)
-
-
 def per_group_metrics(df, scores, seed=TIE_SEED):
-    """NDCG и MRR по группам из двух и более товаров.
+    """NDCG и MRR по группам из двух и более товаров с хотя бы одной покупкой.
 
     Группа из одного товара в ранжирование не входит: сравнивать нечего.
-    Группа без покупки остаётся, её NDCG равен 0.
+    Группа без покупки в среднее не входит и не считается нулём.
     """
     rng = np.random.default_rng(seed)
     work = df[["user_id", "item_id", "day", "label"]].copy()
     work["score"] = scores
     ndcg3, ndcg5, mrrs, sizes = [], [], [], []
     for _, group in work.groupby(["user_id", "day"], sort=True):
-        if len(group) < 2:
+        if len(group) < 2 or int(group["label"].sum()) < 1:
             continue
         group = group.sort_values("item_id")
         noise = rng.random(len(group))

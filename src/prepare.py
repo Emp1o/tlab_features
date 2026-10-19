@@ -58,10 +58,12 @@ con.sql("""
 con.sql("COPY item_cat TO 'data/item_category.parquet' (FORMAT parquet)")
 con.sql("COPY (SELECT * FROM read_csv_auto('data/category_tree.csv')) TO 'data/category_tree.parquet' (FORMAT parquet)")
 
+# Метка — только покупка. Корзина без transaction остаётся отрицательным примером:
+# цель рекомендации — покупка, а не addtocart.
 con.sql("""
     CREATE TABLE examples AS
     SELECT user_id, item_id, day,
-           max(CASE WHEN event IN ('addtocart', 'transaction') THEN 1 ELSE 0 END) AS label
+           max(CASE WHEN event = 'transaction' THEN 1 ELSE 0 END) AS label
     FROM ev GROUP BY user_id, item_id, day
 """)
 
@@ -88,7 +90,8 @@ con.sql(f"""
     FROM examples_cat e LEFT JOIN first_cat f USING (item_id)
 """)
 
-# Группы для метрик ранжирования: хотя бы 2 товара и хотя бы один положительный
+# Группы для метрик ранжирования: хотя бы 2 товара и хотя бы одна покупка.
+# Группа без покупки в rank_group не входит и не даёт нулевой NDCG в среднее.
 con.sql("""
     CREATE TABLE dataset_final AS
     SELECT d.*, (g.n_items >= 2 AND g.n_pos >= 1) AS rank_group
@@ -103,10 +106,13 @@ con.sql("""
     SELECT split, min(day) AS first_day, max(day) AS last_day,
            count(*) AS rows, round(avg(label), 4) AS pos_share,
            count(DISTINCT (user_id, day)) FILTER (WHERE rank_group) AS rank_groups
-    FROM dataset_final GROUP BY split ORDER BY first_day
+    FROM dataset_final
+    WHERE split IN ('train', 'val')
+    GROUP BY split ORDER BY first_day
 """).show()
 con.sql("""
     SELECT round(avg(category_id IS NULL::INT), 4) AS no_category,
            round(avg(category_fallback::INT), 4) AS category_fallback
     FROM dataset_final
+    WHERE split IN ('train', 'val')
 """).show()

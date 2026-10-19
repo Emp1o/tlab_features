@@ -71,6 +71,8 @@ NULL у признака 5 на val: 0.9919. Нулей нет.
 | не выше медианы | 0.0869 (2 462) | 0.1335 (1 648) | 0.0105 (599 878) |
 | выше медианы | 0.1138 (3 294) | 0.1236 (1 748) | 0.0097 (597 281) |
 
+Описательный разбор заказов и наличия только на train: `report/eda_basket_availability.md`. Val и test не читались.
+
 Подробности: `report/results.md`, `report/lgbm_comparison.csv`, `report/baseline_diffs.csv`, `report/category_comparison.csv`, `report/category_recency_comparison.csv`, `report/category_recency_rates.csv`, `report/feature_selection.csv`.
 
 ## Вывод Максима (19.10.2026)
@@ -93,3 +95,4 @@ NULL у признака 5 на val: 0.9919. Нулей нет.
 - 19.10.2026: бутстреп NDCG@3 моделей против popularity и prior views на 617 группах val.
 - 19.10.2026: шаг 4 — 2 личных и 2 категорийных признака покупок, отбор и сравнение с A_old на 617 группах val.
 - 19.10.2026: признак 5 — давность покупки пользователя в категории; отбор со всеми 5, три варианта на 617 группах val, таблица доли покупок на train.
+- 19.10.2026: описательный разбор заказов и наличия на train, без обучения (`report/eda_basket_availability.md`).

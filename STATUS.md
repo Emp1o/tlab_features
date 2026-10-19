@@ -88,7 +88,21 @@ NULL у признака 5 на val: 0.9919. Нулей нет.
 
 NULL у обоих признаков на val: 0.1152. В 261 из 617 групп available различается между товарами, доля 0.4230.
 
-Подробности: `report/results.md`, `report/lgbm_comparison.csv`, `report/baseline_diffs.csv`, `report/category_comparison.csv`, `report/category_recency_comparison.csv`, `report/category_recency_rates.csv`, `report/availability_comparison.csv`, `report/feature_selection.csv`.
+Второй период, предрегистрированные списки, среднее предсказаний пяти сидов. Val2 2015-08-07 — 2015-08-20: 204 221 строка, 589 групп. Train2 2015-05-03 — 2015-08-06 короче текущего train: лог начинается 2015-05-03, полный сдвиг ушёл бы в 2015-04-19. На val2 у всех строк есть 30 дней истории; в train2 таких строк без полных 30 дней 502 347, окно просто короче.
+
+| Val2 | NDCG@3 | NDCG@5 | MRR | AUC |
+|---|---:|---:|---:|---:|
+| A_new | 0.6767 | 0.7111 | 0.7058 | 0.7897 |
+| A_new+7 | 0.6722 | 0.7094 | 0.6989 | 0.8369 |
+| popularity | 0.6351 | 0.6743 | 0.6670 | 0.6146 |
+| prior views | 0.6142 | 0.6494 | 0.6309 | 0.5446 |
+| random | 0.6075 | 0.6538 | 0.6359 | 0.5076 |
+
+Разницы NDCG@3, 1 000 бутстрепов, 589 групп: (A_new+7)−A_new −0.0045 (−0.0206–0.0112), A_new−popularity 0.0416 (0.0197–0.0645), (A_new+7)−popularity 0.0371 (0.0159–0.0591). Интервал (A_new+7)−A_new не целиком выше 0, по правилу выбран A_new. Разброс NDCG@3 по сидам: A_new 0.6747–0.6789, A_new+7 0.6634–0.6779.
+
+Первый val, те же 617 групп и те же 5 сидов: A_new 0.6580 / 0.6870 / 0.6805 / 0.7744, A_new+7 0.6679 / 0.6969 / 0.6896 / 0.8255. Разницы: (A_new+7)−A_new 0.0099 (−0.0054–0.0247), A_new−popularity 0.0185 (−0.0030–0.0403), (A_new+7)−popularity 0.0284 (0.0054–0.0520). Сиды: A_new 0.6556–0.6612, A_new+7 0.6605–0.6703.
+
+Подробности: `report/results.md`, `report/second_period.csv`, `report/lgbm_comparison.csv`, `report/baseline_diffs.csv`, `report/category_comparison.csv`, `report/category_recency_comparison.csv`, `report/category_recency_rates.csv`, `report/availability_comparison.csv`, `report/feature_selection.csv`.
 
 ## Вывод Максима (19.10.2026)
 
@@ -98,11 +112,84 @@ NULL у обоих признаков на val: 0.1152. В 261 из 617 груп
 
 Существуют различные категории товаров, которые имеют свою специфику, например, покупка техники для дома(утюг, стиралка и прочее), эта категория сама по себе редкая (люди не покупают такие товары каждый месяц), значит можно по частоте покупок товаров какой-то категории понять, является она такой или нет, или наоборот есть категории товаров, которые заказывают часто (предметы одежды (те же самые носки)), поэтому товары таких категорий могут часто покупать, поэтому логичнее чаще предлагать такие товары (повод из-за категории поднять вероятность покупки для таких товаров)
 
+## Предрегистрация второго периода (Максим, 19.10.2026)
+
+Кандидаты заморожены. На втором периоде отборщик не запускается.
+
+A_new — 21 признак, помеченный «прошёл» в `report/feature_selection.csv`:
+
+1. `user_item__addtocart__1__count`
+2. `user_item__addtocart__7__count`
+3. `user_item__addtocart__30__count`
+4. `user_item__view__1__count`
+5. `user_item__view__7__count`
+6. `item__addtocart__14__count`
+7. `item__addtocart__30__count`
+8. `item__addtocart__7__count`
+9. `item__addtocart__1__count`
+10. `item__view__14__count`
+11. `item__view__1__count`
+12. `item__transaction__14__count`
+13. `item__transaction__30__count`
+14. `item__view__all__recency`
+15. `user_item__addtocart__7_30__trend`
+16. `item__transaction__7__count`
+17. `item__available__asof`
+18. `item__addtocart__all__recency`
+19. `user_item__addtocart__all__recency`
+20. `item__transaction__1__share`
+21. `user_item__view__7_30__trend`
+
+Семь новых признаков шага 4:
+
+1. `user_category__transaction__30__count`
+2. `user_category__transaction__30__share`
+3. `category_all__transaction__30__count`
+4. `category_all__transaction__repeat_share`
+5. `user_category__transaction__all__recency`
+6. `item__available__asof`
+7. `item__available__switches`
+
+A_new+7 — эти семь плюс A_new. `item__available__asof` уже входит в A_new, поэтому имён 27:
+
+1. `user_item__addtocart__1__count`
+2. `user_item__addtocart__7__count`
+3. `user_item__addtocart__30__count`
+4. `user_item__view__1__count`
+5. `user_item__view__7__count`
+6. `item__addtocart__14__count`
+7. `item__addtocart__30__count`
+8. `item__addtocart__7__count`
+9. `item__addtocart__1__count`
+10. `item__view__14__count`
+11. `item__view__1__count`
+12. `item__transaction__14__count`
+13. `item__transaction__30__count`
+14. `item__view__all__recency`
+15. `user_item__addtocart__7_30__trend`
+16. `item__transaction__7__count`
+17. `item__available__asof`
+18. `item__addtocart__all__recency`
+19. `user_item__addtocart__all__recency`
+20. `item__transaction__1__share`
+21. `user_item__view__7_30__trend`
+22. `user_category__transaction__30__count`
+23. `user_category__transaction__30__share`
+24. `category_all__transaction__30__count`
+25. `category_all__transaction__repeat_share`
+26. `user_category__transaction__all__recency`
+27. `item__available__switches`
+
+Правило: больший набор берём, только если 95% бутстреп-интервал разницы NDCG@3 (A_new+7 − A_new) на втором периоде целиком выше 0. Иначе A_new. Интервал — 1 000 бутстрепов групп, seed 42, квантили 2.5 и 97.5. «Целиком выше 0» значит нижняя граница > 0.
+
+Метрика модели — среднее предсказаний, не среднее метрик. Пять сидов LightGBM: 42, 43, 44, 45, 46. Остальные параметры как в `src/train_lgbm.py`, ранняя остановка на val этого периода. Порядок колонок один и тот же у всех сидов: имена по алфавиту. Предсказания пяти сидов усредняются, по среднему считаются NDCG, MRR и AUC. Ничья равных предсказаний внутри группы — seed 42.
+
+Окно зафиксировано сдвигом на длину текущего val (14 дней) назад, без пересечения с val 2015-08-21 — 2015-09-03 и без test. Val2: 2015-08-07 — 2015-08-20. Train2: 2015-05-03 — 2015-08-06. Train той же длины, что текущий, начинался бы 2015-04-19, раньше начала лога, поэтому train2 короче: все дни лога до val2. Окна признаков те же, что в генераторе: события строго до дня группы. Если до дня группы меньше 30 дней, окно короче и отдельной импутации нет.
+
 ## Следующие шаги
 
-1. Проверка на втором временном периоде.
-2. Независимая проверка, заморозка, один прогон на test.
-3. Отчёт (выводы своими словами Максима) + резюме к 25.10.
+1. Независимая проверка, заморозка, один прогон на test.
+2. Отчёт (выводы своими словами Максима) + резюме к 25.10.
 
 ## Журнал
 
@@ -112,3 +199,4 @@ NULL у обоих признаков на val: 0.1152. В 261 из 617 груп
 - 19.10.2026: признак 5 — давность покупки пользователя в категории; отбор со всеми 5, три варианта на 617 группах val, таблица доли покупок на train.
 - 19.10.2026: описательный разбор заказов и наличия на train, без обучения (`report/eda_basket_availability.md`).
 - 19.10.2026: признаки 6–7 — наличие as-of и число переключений; отбор со всеми 7, сравнение на 617 группах val.
+- 19.10.2026: второй период, val2 2015-08-07 — 2015-08-20, 589 групп. По предрегистрированному правилу выбран A_new.

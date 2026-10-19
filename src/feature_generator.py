@@ -20,6 +20,8 @@ USER_CATEGORY_BUY_SHARE = "user_category__transaction__30__share"
 # Те же покупки, но по всем пользователям категории.
 CATEGORY_ALL_BUY_COUNT = "category_all__transaction__30__count"
 CATEGORY_ALL_REPEAT_SHARE = "category_all__transaction__repeat_share"
+# Дни с последней покупки пользователя в категории товара. Не покупал — NULL.
+USER_CATEGORY_BUY_RECENCY = "user_category__transaction__all__recency"
 # Меньше 5 покупок в истории категории: (повторные + 1) / (покупки + 2).
 REPEAT_RAW_MIN = 5
 
@@ -141,7 +143,7 @@ def nunique_columns(who):
 
 
 def add_user_category_purchase_features(con):
-    """Четыре признака покупок в категории товара строки.
+    """Пять признаков покупок в категории товара строки.
 
     Категория строки — последнее categoryid с timestamp строго до начала дня D.
     У каждой прошлой покупки своя категория, as-of на момент покупки.
@@ -151,6 +153,8 @@ def add_user_category_purchase_features(con):
     у этого покупателя уже была покупка в той же категории с меньшим timestamp.
     Если таких покупок не было, доля NULL. Если их меньше 5, к числителю и
     знаменателю добавляется по единице.
+    Давность — число дней между днём группы и днём последней покупки этого
+    пользователя в категории строки. Покупки дня группы не входят. Не покупал — NULL.
     """
     con.sql("""
         CREATE TABLE buy_at_ts AS
@@ -201,6 +205,12 @@ def add_user_category_purchase_features(con):
         )
         ORDER BY category_id, day
     """)
+    con.sql("""
+        CREATE TABLE uc_buy_day AS
+        SELECT DISTINCT user_id, category_id, day
+        FROM buy_at_ts
+        ORDER BY user_id, category_id, day
+    """)
     con.sql(f"""
         CREATE TABLE row_cat AS
         SELECT e.user_id, e.item_id, e.day, c.category_id
@@ -239,7 +249,10 @@ def add_user_category_purchase_features(con):
                     WHEN chi.n_cum < {REPEAT_RAW_MIN}
                     THEN (chi.repeat_cum + 1)::DOUBLE / (chi.n_cum + 2)
                     ELSE chi.repeat_cum::DOUBLE / chi.n_cum
-               END AS {CATEGORY_ALL_REPEAT_SHARE}
+               END AS {CATEGORY_ALL_REPEAT_SHARE},
+               CASE WHEN ex.row_category_id IS NULL OR last_buy.day IS NULL THEN NULL
+                    ELSE date_diff('day', last_buy.day, ex.day)::DOUBLE
+               END AS {USER_CATEGORY_BUY_RECENCY}
         FROM ex_cat ex
         ASOF LEFT JOIN uc_buy_cum hi
           ON ex.user_id = hi.user_id
@@ -255,6 +268,10 @@ def add_user_category_purchase_features(con):
         ASOF LEFT JOIN cat_buy_cum clo
           ON ex.row_category_id = clo.category_id
          AND {cutoff(30)} > clo.day
+        ASOF LEFT JOIN uc_buy_day last_buy
+          ON ex.user_id = last_buy.user_id
+         AND ex.row_category_id = last_buy.category_id
+         AND ex.day > last_buy.day
     """)
     n_feat = con.sql("SELECT count(*) FROM feat_user_category").fetchone()[0]
     n_ex = con.sql("SELECT count(*) FROM ex").fetchone()[0]
@@ -411,6 +428,7 @@ def main():
         f"f_ucat.{USER_CATEGORY_BUY_SHARE}",
         f"f_ucat.{CATEGORY_ALL_BUY_COUNT}",
         f"f_ucat.{CATEGORY_ALL_REPEAT_SHARE}",
+        f"f_ucat.{USER_CATEGORY_BUY_RECENCY}",
     ])
 
     con.sql(f"""
@@ -455,6 +473,12 @@ def main():
            OR {CATEGORY_ALL_REPEAT_SHARE} < 0
            OR {CATEGORY_ALL_REPEAT_SHARE} > 1
            OR ({CATEGORY_ALL_BUY_COUNT} IS NULL AND {CATEGORY_ALL_REPEAT_SHARE} IS NOT NULL)
+           OR {USER_CATEGORY_BUY_RECENCY} < 1
+           OR ({CATEGORY_ALL_BUY_COUNT} IS NULL AND {USER_CATEGORY_BUY_RECENCY} IS NOT NULL)
+           OR (
+                {USER_CATEGORY_BUY_COUNT} > 0
+                AND ({USER_CATEGORY_BUY_RECENCY} IS NULL OR {USER_CATEGORY_BUY_RECENCY} > 30)
+           )
     """).fetchone()[0]
     if bad:
         raise SystemExit(f"feature sanity check failed on {bad} rows")

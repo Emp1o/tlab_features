@@ -12,6 +12,7 @@ from feature_generator import (
     CATEGORY_ALL_REPEAT_SHARE,
     REPEAT_RAW_MIN,
     USER_CATEGORY_BUY_COUNT,
+    USER_CATEGORY_BUY_RECENCY,
     USER_CATEGORY_BUY_SHARE,
 )
 from metrics import ndcg_at_k
@@ -396,3 +397,98 @@ def test_category_all_purchase_features_do_not_leak():
     assert n_unknown == 0
     assert n_smoothed > 0
     assert n_raw > 0
+
+
+def test_user_category_recency_does_not_leak():
+    """Давность — дни до последней покупки пользователя в категории, строго до дня D.
+
+    Категория строки известна только до 03:00. Категория покупки — на момент покупки.
+    Покупка в день группы не делает давность нулевой.
+    """
+    con = duckdb.connect()
+    con.sql(f"""
+        CREATE TABLE item_cat AS
+        SELECT item_id, ts, category_id
+        FROM '{CATEGORIES}'
+        WHERE category_id IS NOT NULL
+        ORDER BY item_id, ts
+    """)
+    con.sql(f"""
+        CREATE TABLE buys AS
+        SELECT user_id, item_id, ts, day
+        FROM '{EVENTS}'
+        WHERE event = 'transaction' AND day <= DATE '{VAL_LAST_DAY}'
+    """)
+    con.sql("""
+        CREATE TABLE buy_at_purchase AS
+        SELECT b.user_id, b.day, c.category_id
+        FROM buys b
+        ASOF LEFT JOIN item_cat c ON b.item_id = c.item_id AND b.ts >= c.ts
+        WHERE c.category_id IS NOT NULL
+    """)
+    con.sql(f"""
+        CREATE TABLE rows AS
+        SELECT e.user_id, e.item_id, e.day,
+               epoch_ms(CAST(e.day AS TIMESTAMP)) + {DAY_SHIFT_MS} AS day_start,
+               c.{USER_CATEGORY_BUY_RECENCY} AS got
+        FROM '{EXAMPLES}' e
+        JOIN '{CANDIDATES}' c USING (user_id, item_id, day)
+        WHERE e.split IN ('train', 'val')
+    """)
+    con.sql("""
+        CREATE TABLE row_strict AS
+        SELECT r.*, c.category_id
+        FROM rows r
+        ASOF LEFT JOIN item_cat c
+          ON r.item_id = c.item_id AND r.day_start > c.ts
+    """)
+    con.sql("""
+        CREATE TABLE row_inclusive AS
+        SELECT r.user_id, r.item_id, r.day, c.category_id
+        FROM rows r
+        ASOF LEFT JOIN item_cat c
+          ON r.item_id = c.item_id AND r.day_start >= c.ts
+    """)
+    stats = con.sql("""
+        WITH expected AS (
+            SELECT r.user_id, r.item_id, r.day, r.category_id, r.got,
+                   max(b.day) AS last_day
+            FROM row_strict r
+            LEFT JOIN buy_at_purchase b
+              ON r.category_id IS NOT NULL
+             AND b.user_id = r.user_id
+             AND b.category_id = r.category_id
+             AND b.day < r.day
+            GROUP BY r.user_id, r.item_id, r.day, r.category_id, r.got
+        ),
+        scored AS (
+            SELECT e.*, i.category_id AS inclusive_category,
+                   CASE WHEN e.category_id IS NULL OR e.last_day IS NULL THEN NULL
+                        ELSE date_diff('day', e.last_day, e.day)::DOUBLE
+                   END AS exp
+            FROM expected e
+            JOIN row_inclusive i USING (user_id, item_id, day)
+        ),
+        same_day AS (
+            SELECT DISTINCT user_id, category_id, day FROM buy_at_purchase
+        )
+        SELECT
+            (SELECT count(*) FROM scored WHERE got IS DISTINCT FROM exp),
+            (SELECT count(*) FROM scored WHERE got IS NOT NULL AND got < 1),
+            (SELECT count(*) FROM scored s
+             JOIN same_day d
+               ON d.user_id = s.user_id AND d.category_id = s.category_id AND d.day = s.day),
+            (SELECT count(*) FROM scored
+             WHERE category_id IS DISTINCT FROM inclusive_category),
+            (SELECT count(*) FROM scored WHERE category_id IS NULL AND got IS NOT NULL),
+            (SELECT count(*) FROM scored WHERE category_id IS NOT NULL AND last_day IS NULL),
+            (SELECT count(*) FROM scored WHERE got IS NOT NULL)
+    """).fetchone()
+    n_bad, n_zero, n_same_day, n_strict, n_unknown, n_never, n_known = stats
+    assert n_bad == 0
+    assert n_zero == 0
+    assert n_same_day > 0
+    assert n_strict > 0
+    assert n_unknown == 0
+    assert n_never > 0
+    assert n_known > 0

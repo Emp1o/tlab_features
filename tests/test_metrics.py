@@ -2,12 +2,14 @@ import sys
 from pathlib import Path
 
 import duckdb
+import numpy as np
 import pandas as pd
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from baseline_diffs import comparison_rows, same_groups
 from metrics import evaluate, ndcg_at_k
-from train_lgbm import per_group_metrics
+from train_lgbm import bootstrap_indices, per_group_metrics
 
 ROOT = Path(__file__).resolve().parents[1]
 EVENTS = ROOT / "data" / "events_clean.parquet"
@@ -51,6 +53,28 @@ def test_per_group_metrics_skips_groups_without_purchase():
     assert grouped["ndcg5"][0] == pytest.approx(1.0)
     assert grouped["mrr"][0] == pytest.approx(1.0)
     assert grouped["ndcg3"].mean() > 0.5
+    assert list(grouped["user_id"]) == [1, 4]
+
+
+def test_baseline_diffs_use_the_same_groups():
+    frame = _frame()
+    left = per_group_metrics(frame, frame["score"].to_numpy(), seed=42)
+    right = per_group_metrics(frame, np.zeros(len(frame)), seed=42)
+    grouped = {"A": left, "popularity": right}
+    assert same_groups(grouped) == 2
+    indices = bootstrap_indices(2, 1000, 42)
+    table = comparison_rows(
+        {"A": left["ndcg3"], "popularity": right["ndcg3"], "B": left["ndcg3"], "C": left["ndcg3"], "prior_views": right["ndcg3"]},
+        indices,
+    )
+    # Одни и те же индексы: A−popularity и B−popularity совпадают, раз массив A равен B.
+    a_pop = table.loc[table["comparison"] == "A-popularity"].iloc[0]
+    b_pop = table.loc[table["comparison"] == "B-popularity"].iloc[0]
+    assert a_pop["n_groups"] == 2
+    assert a_pop["ndcg_3"] == pytest.approx(b_pop["ndcg_3"])
+    assert a_pop["ndcg_3_low"] == pytest.approx(b_pop["ndcg_3_low"])
+    assert a_pop["ndcg_3_high"] == pytest.approx(b_pop["ndcg_3_high"])
+    assert a_pop["ndcg_3"] == pytest.approx(left["ndcg3"].mean() - right["ndcg3"].mean())
 
 
 def test_label_is_transaction_only():

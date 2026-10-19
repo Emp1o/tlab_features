@@ -131,8 +131,8 @@ def per_group_metrics(df, scores, seed=TIE_SEED):
     rng = np.random.default_rng(seed)
     work = df[["user_id", "item_id", "day", "label"]].copy()
     work["score"] = scores
-    ndcg3, ndcg5, mrrs, sizes = [], [], [], []
-    for _, group in work.groupby(["user_id", "day"], sort=True):
+    ndcg3, ndcg5, mrrs, sizes, users, days = [], [], [], [], [], []
+    for (user_id, day), group in work.groupby(["user_id", "day"], sort=True):
         if len(group) < 2 or int(group["label"].sum()) < 1:
             continue
         group = group.sort_values("item_id")
@@ -143,11 +143,15 @@ def per_group_metrics(df, scores, seed=TIE_SEED):
         ndcg5.append(ndcg_at_k(labels, 5))
         mrrs.append(reciprocal_rank(labels))
         sizes.append(len(group))
+        users.append(user_id)
+        days.append(day)
     return {
         "ndcg3": np.asarray(ndcg3, dtype=np.float64),
         "ndcg5": np.asarray(ndcg5, dtype=np.float64),
         "mrr": np.asarray(mrrs, dtype=np.float64),
         "size": np.asarray(sizes, dtype=np.int32),
+        "user_id": np.asarray(users),
+        "day": np.asarray(days),
     }
 
 

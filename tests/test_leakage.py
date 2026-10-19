@@ -7,11 +7,24 @@ import pandas as pd
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from feature_generator import (
+    CATEGORY_ALL_BUY_COUNT,
+    CATEGORY_ALL_REPEAT_SHARE,
+    REPEAT_RAW_MIN,
+    USER_CATEGORY_BUY_COUNT,
+    USER_CATEGORY_BUY_SHARE,
+)
 from metrics import ndcg_at_k
 
 ROOT = Path(__file__).resolve().parents[1]
 EVENTS = ROOT / "data" / "events_clean.parquet"
 FEATURES = ROOT / "data" / "features_manual.parquet"
+EXAMPLES = ROOT / "data" / "examples.parquet"
+CANDIDATES = ROOT / "data" / "feature_candidates.parquet"
+CATEGORIES = ROOT / "data" / "item_category.parquet"
+DAY_SHIFT_MS = 3 * 3600 * 1000
+# Последний день val. Покупки test-периода в окна train/val не входят.
+VAL_LAST_DAY = "2015-09-03"
 SEED = 0
 # То же значение, что в features_manual.py: не было просмотра — 999, не NULL.
 RECENCY_MISSING = 999
@@ -105,3 +118,281 @@ def test_pair_features_ignore_same_day_events():
     """).fetchone()
     assert n_pairs > 0
     assert n_bad == 0
+
+
+def test_user_category_buys_do_not_leak():
+    """Покупки в категории не видят день D, будущее и категорию с начала этого дня.
+
+    Категория строки — строго до 03:00 дня D. Категория прошлой покупки — на момент
+    покупки. Нет категории — NULL. Ноль покупок пользователя за 30 дней — доля NULL.
+    """
+    con = duckdb.connect()
+    con.sql(f"""
+        CREATE TABLE item_cat AS
+        SELECT item_id, ts, category_id
+        FROM '{CATEGORIES}'
+        WHERE category_id IS NOT NULL
+        ORDER BY item_id, ts
+    """)
+    con.sql(f"""
+        CREATE TABLE buys AS
+        SELECT user_id, item_id, ts, day,
+               epoch_ms(CAST(day AS TIMESTAMP)) + {DAY_SHIFT_MS} AS day_start
+        FROM '{EVENTS}'
+        WHERE event = 'transaction' AND day <= DATE '{VAL_LAST_DAY}'
+    """)
+    con.sql("""
+        CREATE TABLE buy_at_purchase AS
+        SELECT b.user_id, b.day, c.category_id
+        FROM buys b
+        ASOF LEFT JOIN item_cat c ON b.item_id = c.item_id AND b.ts >= c.ts
+        WHERE c.category_id IS NOT NULL
+    """)
+    # Снимок ровно в 03:00 дня покупки здесь отброшен: это не «на момент покупки».
+    con.sql("""
+        CREATE TABLE buy_before_day AS
+        SELECT b.user_id, b.day, c.category_id
+        FROM buys b
+        ASOF LEFT JOIN item_cat c ON b.item_id = c.item_id AND b.day_start > c.ts
+        WHERE c.category_id IS NOT NULL
+    """)
+    con.sql(f"""
+        CREATE TABLE rows AS
+        SELECT e.user_id, e.item_id, e.day,
+               epoch_ms(CAST(e.day AS TIMESTAMP)) + {DAY_SHIFT_MS} AS day_start,
+               c.{USER_CATEGORY_BUY_COUNT} AS got_count,
+               c.{USER_CATEGORY_BUY_SHARE} AS got_share,
+               c.user__transaction__30__count AS got_user_buys
+        FROM '{EXAMPLES}' e
+        JOIN '{CANDIDATES}' c USING (user_id, item_id, day)
+        WHERE e.split IN ('train', 'val')
+    """)
+    con.sql("""
+        CREATE TABLE row_strict AS
+        SELECT r.user_id, r.item_id, r.day, r.day_start, r.got_count, r.got_share,
+               r.got_user_buys, c.category_id
+        FROM rows r
+        ASOF LEFT JOIN item_cat c
+          ON r.item_id = c.item_id AND r.day_start > c.ts
+    """)
+    con.sql("""
+        CREATE TABLE row_inclusive AS
+        SELECT r.user_id, r.item_id, r.day, c.category_id
+        FROM rows r
+        ASOF LEFT JOIN item_cat c
+          ON r.item_id = c.item_id AND r.day_start >= c.ts
+    """)
+
+    def window_count(buy_table, category_table):
+        con.sql(f"""
+            CREATE OR REPLACE TABLE {category_table}_sum AS
+            SELECT r.user_id, r.item_id, r.day,
+                   CASE WHEN r.category_id IS NULL THEN NULL
+                        ELSE coalesce(sum(b.n), 0) END AS n
+            FROM {category_table} r
+            LEFT JOIN (
+                SELECT user_id, category_id, day, count(*) AS n
+                FROM {buy_table}
+                GROUP BY 1, 2, 3
+            ) b
+              ON r.category_id IS NOT NULL
+             AND b.user_id = r.user_id
+             AND b.category_id = r.category_id
+             AND b.day < r.day
+             AND b.day >= r.day - INTERVAL 30 DAY
+            GROUP BY r.user_id, r.item_id, r.day, r.category_id
+        """)
+
+    window_count("buy_at_purchase", "row_strict")
+    # Та же категория строки, но у покупки снят снимок ровно в 03:00 её дня.
+    con.sql("""
+        CREATE TABLE row_for_boundary AS
+        SELECT user_id, item_id, day, category_id FROM row_strict
+    """)
+    window_count("buy_before_day", "row_for_boundary")
+    con.sql("""
+        CREATE TABLE user_buys AS
+        SELECT r.user_id, r.item_id, r.day, coalesce(sum(b.n), 0) AS n
+        FROM rows r
+        LEFT JOIN (
+            SELECT user_id, day, count(*) AS n
+            FROM buys
+            GROUP BY 1, 2
+        ) b
+          ON b.user_id = r.user_id
+         AND b.day < r.day
+         AND b.day >= r.day - INTERVAL 30 DAY
+        GROUP BY r.user_id, r.item_id, r.day
+    """)
+    stats = con.sql("""
+        WITH cmp AS (
+            SELECT s.got_count, s.got_share, s.category_id, s.day,
+                   s.user_id, e.n AS exp_count, u.n AS user_buys,
+                   i.category_id AS inclusive_category,
+                   p.n AS boundary_count
+            FROM row_strict s
+            JOIN row_strict_sum e USING (user_id, item_id, day)
+            JOIN user_buys u USING (user_id, item_id, day)
+            JOIN row_inclusive i USING (user_id, item_id, day)
+            JOIN row_for_boundary_sum p USING (user_id, item_id, day)
+        ),
+        same_day AS (
+            SELECT user_id, category_id, day, count(*) AS n
+            FROM buy_at_purchase
+            GROUP BY 1, 2, 3
+        )
+        SELECT
+            (SELECT count(*) FROM cmp
+             WHERE got_count IS DISTINCT FROM exp_count
+                OR (category_id IS NULL OR user_buys = 0) AND got_share IS NOT NULL
+                OR category_id IS NOT NULL AND user_buys > 0
+                   AND (got_share IS NULL OR abs(got_share - exp_count / user_buys) > 1e-9)),
+            (SELECT count(*) FROM cmp c
+             JOIN same_day d
+               ON d.user_id = c.user_id AND d.category_id = c.category_id AND d.day = c.day),
+            (SELECT count(*) FROM cmp
+             WHERE category_id IS DISTINCT FROM inclusive_category),
+            (SELECT count(*) FROM cmp WHERE exp_count IS DISTINCT FROM boundary_count),
+            (SELECT count(*) FROM cmp
+             WHERE user_buys = 0 AND (got_share = 0 OR got_share IS NOT NULL)),
+            (SELECT count(*) FROM cmp
+             WHERE category_id IS NULL AND (got_count IS NOT NULL OR got_share IS NOT NULL))
+    """).fetchone()
+    n_bad, n_same_day, n_strict, n_purchase_time, n_zero_share, n_unknown = stats
+    assert n_bad == 0
+    assert n_same_day > 0
+    assert n_strict > 0
+    assert n_purchase_time > 0
+    assert n_zero_share == 0
+    assert n_unknown == 0
+
+
+def test_category_all_purchase_features_do_not_leak():
+    """Категорийные признаки считают покупки всех пользователей до дня D.
+
+    Повторная покупка — у покупателя уже была покупка в этой категории раньше
+    по timestamp, не в ту же миллисекунду. Меньше 5 покупок сглаживаются приором.
+    """
+    con = duckdb.connect()
+    con.sql(f"""
+        CREATE TABLE item_cat AS
+        SELECT item_id, ts, category_id
+        FROM '{CATEGORIES}'
+        WHERE category_id IS NOT NULL
+        ORDER BY item_id, ts
+    """)
+    con.sql(f"""
+        CREATE TABLE buys AS
+        SELECT user_id, item_id, ts, day
+        FROM '{EVENTS}'
+        WHERE event = 'transaction' AND day <= DATE '{VAL_LAST_DAY}'
+    """)
+    con.sql("""
+        CREATE TABLE buy_at_purchase AS
+        SELECT b.user_id, b.ts, b.day, c.category_id,
+               count(*) OVER (
+                   PARTITION BY b.user_id, c.category_id
+                   ORDER BY b.ts
+                   RANGE BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
+               ) > 0 AS is_repeat
+        FROM buys b
+        ASOF LEFT JOIN item_cat c ON b.item_id = c.item_id AND b.ts >= c.ts
+        WHERE c.category_id IS NOT NULL
+    """)
+    # Окно не должно считать покупку с тем же timestamp предыдущей.
+    repeat_bad = con.sql("""
+        SELECT count(*) FROM buy_at_purchase b
+        WHERE is_repeat <> EXISTS (
+            SELECT 1 FROM buy_at_purchase p
+            WHERE p.user_id = b.user_id
+              AND p.category_id = b.category_id
+              AND p.ts < b.ts
+        )
+    """).fetchone()[0]
+    assert repeat_bad == 0
+    con.sql(f"""
+        CREATE TABLE rows AS
+        SELECT e.user_id, e.item_id, e.day,
+               epoch_ms(CAST(e.day AS TIMESTAMP)) + {DAY_SHIFT_MS} AS day_start,
+               c.{CATEGORY_ALL_BUY_COUNT} AS got_count,
+               c.{CATEGORY_ALL_REPEAT_SHARE} AS got_share
+        FROM '{EXAMPLES}' e
+        JOIN '{CANDIDATES}' c USING (user_id, item_id, day)
+        WHERE e.split IN ('train', 'val')
+    """)
+    con.sql("""
+        CREATE TABLE row_strict AS
+        SELECT r.*, c.category_id
+        FROM rows r
+        ASOF LEFT JOIN item_cat c
+          ON r.item_id = c.item_id AND r.day_start > c.ts
+    """)
+    con.sql("""
+        CREATE TABLE row_inclusive AS
+        SELECT r.user_id, r.item_id, r.day, c.category_id
+        FROM rows r
+        ASOF LEFT JOIN item_cat c
+          ON r.item_id = c.item_id AND r.day_start >= c.ts
+    """)
+    stats = con.sql(f"""
+        WITH daily AS (
+            SELECT category_id, day,
+                   count(*) AS n,
+                   count(*) FILTER (WHERE is_repeat) AS n_repeat
+            FROM buy_at_purchase
+            GROUP BY 1, 2
+        ),
+        expected AS (
+            SELECT r.user_id, r.item_id, r.day, r.category_id,
+                   r.got_count, r.got_share,
+                   CASE WHEN r.category_id IS NULL THEN NULL
+                        ELSE coalesce(sum(d.n) FILTER (
+                            WHERE d.day >= r.day - INTERVAL 30 DAY
+                        ), 0) END AS exp_count,
+                   CASE WHEN r.category_id IS NULL THEN NULL
+                        ELSE coalesce(sum(d.n), 0) END AS hist_n,
+                   CASE WHEN r.category_id IS NULL THEN NULL
+                        ELSE coalesce(sum(d.n_repeat), 0) END AS hist_repeat
+            FROM row_strict r
+            LEFT JOIN daily d
+              ON r.category_id IS NOT NULL
+             AND d.category_id = r.category_id
+             AND d.day < r.day
+            GROUP BY r.user_id, r.item_id, r.day, r.category_id, r.got_count, r.got_share
+        ),
+        scored AS (
+            SELECT e.*, i.category_id AS inclusive_category,
+                   CASE WHEN e.hist_n IS NULL OR e.hist_n = 0 THEN NULL
+                        WHEN e.hist_n < {REPEAT_RAW_MIN}
+                        THEN (e.hist_repeat + 1)::DOUBLE / (e.hist_n + 2)
+                        ELSE e.hist_repeat::DOUBLE / e.hist_n
+                   END AS exp_share
+            FROM expected e
+            JOIN row_inclusive i USING (user_id, item_id, day)
+        ),
+        same_day AS (
+            SELECT category_id, day FROM buy_at_purchase GROUP BY 1, 2
+        )
+        SELECT
+            (SELECT count(*) FROM scored
+             WHERE got_count IS DISTINCT FROM exp_count
+                OR got_share IS DISTINCT FROM exp_share
+                   AND NOT (got_share IS NOT NULL AND exp_share IS NOT NULL
+                            AND abs(got_share - exp_share) <= 1e-9)),
+            (SELECT count(*) FROM scored s
+             JOIN same_day d ON d.category_id = s.category_id AND d.day = s.day),
+            (SELECT count(*) FROM scored
+             WHERE category_id IS DISTINCT FROM inclusive_category),
+            (SELECT count(*) FROM scored WHERE hist_n = 0 AND got_share IS NOT NULL),
+            (SELECT count(*) FROM scored WHERE category_id IS NULL AND got_count IS NOT NULL),
+            (SELECT count(*) FROM scored WHERE hist_n > 0 AND hist_n < {REPEAT_RAW_MIN}),
+            (SELECT count(*) FROM scored WHERE hist_n >= {REPEAT_RAW_MIN})
+    """).fetchone()
+    n_bad, n_same_day, n_strict, n_empty_share, n_unknown, n_smoothed, n_raw = stats
+    assert n_bad == 0
+    assert n_same_day > 0
+    assert n_strict > 0
+    assert n_empty_share == 0
+    assert n_unknown == 0
+    assert n_smoothed > 0
+    assert n_raw > 0

@@ -75,6 +75,63 @@ A — 20 признаков, прошедших отбор. B — A плюс в�
 
 Итоговый набор A, по убыванию силы: `user_item__addtocart__1__count`, `user_item__addtocart__7__count`, `user_item__addtocart__30__count`, `user_item__view__1__count`, `user_item__view__7__count`, `item__addtocart__14__count`, `item__addtocart__30__count`, `item__addtocart__7__count`, `item__addtocart__1__count`, `item__view__14__count`, `item__view__1__count`, `item__transaction__14__count`, `item__transaction__30__count`, `item__view__all__recency`, `user_item__addtocart__7_30__trend`, `item__transaction__7__count`, `item__addtocart__all__recency`, `user_item__addtocart__all__recency`, `item__transaction__1__share`, `user_item__view__7_30__trend`.
 
+## Шаг 4: покупки в категории
+
+Дата: 2026-10-19. Val, 204 065 строк, 617 групп с покупкой. Тест не оценивался.
+Правило отбора то же: сила = |group AUC − 0.5|, порог = средняя сила, дубли |Спирмен| > 0.9. Считалось на train.
+
+Категория строки — последнее `categoryid` с timestamp строго до 03:00 дня группы. Категория каждой прошлой покупки — as-of на момент этой покупки. События дня группы и позже не входят. Нет категории до начала дня — NULL.
+
+Четыре кандидата, теперь их 149:
+
+- `user_category__transaction__30__count` — покупки этого пользователя в категории товара за 30 дней
+- `user_category__transaction__30__share` — эти покупки / все покупки пользователя за 30 дней; если покупок 0, NULL, не 0
+- `category_all__transaction__30__count` — покупки всех пользователей в этой категории за 30 дней
+- `category_all__transaction__repeat_share` — по всей истории категории до дня группы: среди покупок доля тех, где у покупателя уже была покупка в этой категории с меньшим timestamp. Если покупок в категории не было, NULL. Если их меньше 5, доля = (повторные + 1) / (покупки + 2): одна псевдоповторная и одна псевдопервая. От 5 покупок приор не применяется
+
+Порог силы стал 0.0454 (раньше 0.0459). Все четыре ниже порога, в A не вошли и никого из прежних 20 не вытеснили. A_new совпадает с A_old.
+
+| Признак | group AUC | global AUC | групп в AUC | сила |
+|---|---:|---:|---:|---:|
+| user_category__transaction__30__count | 0.5277 | 0.5249 | 445 | 0.0277 |
+| user_category__transaction__30__share | 0.5277 | 0.5249 | 445 | 0.0277 |
+| category_all__transaction__30__count | 0.5392 | 0.5518 | 3409 | 0.0392 |
+| category_all__transaction__repeat_share | 0.4817 | 0.4940 | 3284 | 0.0183 |
+
+У числа и доли личных покупок group AUC один и тот же: внутри группы (user, day) знаменатель доли общий, порядок товаров совпадает.
+
+Доля NULL и доля нулей на val, от всех 204 065 строк:
+
+| Признак | NULL | ноль |
+|---|---:|---:|
+| user_category__transaction__30__count | 0.1165 | 0.8766 |
+| user_category__transaction__30__share | 0.9727 | 0.0204 |
+| category_all__transaction__30__count | 0.1165 | 0.0696 |
+| category_all__transaction__repeat_share | 0.1541 | 0.0969 |
+
+A_old — прежние 20 признаков. A_old+личные — эти 20 и два личных. A_old+категория — эти 20 и два категорийных. A_old+cat — эти 20 и все четыре. C_new — все 149. Те же 617 групп и те же 1000 бутстреп-индексов. Ничья у моделей — seed 42, у popularity — seed 0.
+
+| Набор | признаков | итерация | NDCG@3 | NDCG@5 | MRR | AUC |
+|---|---:|---:|---:|---:|---:|---:|
+| A_old | 20 | 88 | 0.6617 | 0.6943 | 0.6886 | 0.7342 |
+| A_new | 20 | 88 | 0.6617 | 0.6943 | 0.6886 | 0.7342 |
+| A_old+личные | 22 | 137 | 0.6670 | 0.6978 | 0.6891 | 0.7953 |
+| A_old+категория | 22 | 79 | 0.6681 | 0.6974 | 0.6894 | 0.7388 |
+| A_old+cat | 24 | 77 | 0.6660 | 0.6960 | 0.6811 | 0.7961 |
+| C_new | 149 | 143 | 0.6749 | 0.6996 | 0.6981 | 0.8208 |
+
+| Разница NDCG@3 | оценка | 95% интервал |
+|---|---:|---|
+| A_new − A_old | 0.0000 | 0.0000 – 0.0000 |
+| (A_old+cat) − A_old | 0.0043 | −0.0100 – 0.0196 |
+| (A_old+личные) − A_old | 0.0053 | −0.0075 – 0.0192 |
+| (A_old+категория) − A_old | 0.0064 | −0.0055 – 0.0189 |
+| A_new − popularity | 0.0222 | −0.0008 – 0.0443 |
+| (A_old+cat) − popularity | 0.0265 | 0.0022 – 0.0482 |
+| C_new − A_new | 0.0132 | −0.0050 – 0.0339 |
+
+Файлы: `report/category_comparison.csv`, `report/category_selection_diff.csv`, `report/feature_selection.csv`.
+
 ## Старые цифры (метка cart|purchase, не использовать)
 
 Группы без покупки входили в среднее с NDCG = 0, поэтому групп было около 23 000, а не 617. С бейзлайнами на `rank_group` (1 982 группы) эти NDCG не сравниваются.

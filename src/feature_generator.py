@@ -14,6 +14,14 @@ CANDIDATES_PATH = "data/feature_candidates.parquet"
 # nunique — число разных товаров, поэтому только у пользователя и категории.
 # У давности нет окна. Тренд — одно отношение count_7 / count_30.
 NUNIQUE_WHOS = {"user", "category"}
+# Покупки пользователя в категории товара за 30 дней до дня группы.
+USER_CATEGORY_BUY_COUNT = "user_category__transaction__30__count"
+USER_CATEGORY_BUY_SHARE = "user_category__transaction__30__share"
+# Те же покупки, но по всем пользователям категории.
+CATEGORY_ALL_BUY_COUNT = "category_all__transaction__30__count"
+CATEGORY_ALL_REPEAT_SHARE = "category_all__transaction__repeat_share"
+# Меньше 5 покупок в истории категории: (повторные + 1) / (покупки + 2).
+REPEAT_RAW_MIN = 5
 
 
 def prefix(con, name, path, keys):
@@ -132,6 +140,129 @@ def nunique_columns(who):
     return ",\n".join(lines)
 
 
+def add_user_category_purchase_features(con):
+    """Четыре признака покупок в категории товара строки.
+
+    Категория строки — последнее categoryid с timestamp строго до начала дня D.
+    У каждой прошлой покупки своя категория, as-of на момент покупки.
+    День D и более поздние события не входят. Нет категории до дня D — NULL.
+    Личная доля — от всех покупок пользователя за 30 дней; если их ноль, доля NULL.
+    Доля повторных — по всей истории категории до дня D. Покупка повторная, если
+    у этого покупателя уже была покупка в той же категории с меньшим timestamp.
+    Если таких покупок не было, доля NULL. Если их меньше 5, к числителю и
+    знаменателю добавляется по единице.
+    """
+    con.sql("""
+        CREATE TABLE buy_at_ts AS
+        SELECT e.user_id, e.ts, e.day, c.category_id
+        FROM (
+            SELECT user_id, item_id, ts, day
+            FROM 'data/events_clean.parquet'
+            WHERE event = 'transaction'
+        ) e
+        ASOF LEFT JOIN item_cat c
+          ON e.item_id = c.item_id AND e.ts >= c.ts
+        WHERE c.category_id IS NOT NULL
+    """)
+    con.sql("""
+        CREATE TABLE buy_repeat AS
+        SELECT user_id, category_id, day,
+               count(*) OVER (
+                   PARTITION BY user_id, category_id
+                   ORDER BY ts
+                   RANGE BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
+               ) > 0 AS is_repeat
+        FROM buy_at_ts
+    """)
+    con.sql("""
+        CREATE TABLE uc_buy_cum AS
+        SELECT user_id, category_id, day, buys,
+               sum(buys) OVER (
+                   PARTITION BY user_id, category_id ORDER BY day
+               ) AS buys_cum
+        FROM (
+            SELECT user_id, category_id, day, count(*) AS buys
+            FROM buy_at_ts
+            GROUP BY user_id, category_id, day
+        )
+        ORDER BY user_id, category_id, day
+    """)
+    con.sql("""
+        CREATE TABLE cat_buy_cum AS
+        SELECT category_id, day,
+               sum(n) OVER (PARTITION BY category_id ORDER BY day) AS n_cum,
+               sum(n_repeat) OVER (PARTITION BY category_id ORDER BY day) AS repeat_cum
+        FROM (
+            SELECT category_id, day,
+                   count(*) AS n,
+                   count(*) FILTER (WHERE is_repeat) AS n_repeat
+            FROM buy_repeat
+            GROUP BY category_id, day
+        )
+        ORDER BY category_id, day
+    """)
+    con.sql(f"""
+        CREATE TABLE row_cat AS
+        SELECT e.user_id, e.item_id, e.day, c.category_id
+        FROM (
+            SELECT user_id, item_id, day,
+                   epoch_ms(CAST(day AS TIMESTAMP)) + {DAY_SHIFT_MS} AS day_start_ms
+            FROM ex
+        ) e
+        ASOF LEFT JOIN item_cat c
+          ON e.item_id = c.item_id AND e.day_start_ms > c.ts
+    """)
+    con.sql(f"""
+        CREATE TABLE ex_cat AS
+        SELECT ex.user_id, ex.item_id, ex.day, ex.split,
+               rc.category_id AS row_category_id,
+               fu.user__transaction__30__count AS user_buys_30
+        FROM ex
+        JOIN feat_user fu USING (user_id, item_id, day)
+        JOIN row_cat rc USING (user_id, item_id, day)
+    """)
+    con.sql(f"""
+        CREATE TABLE feat_user_category AS
+        SELECT ex.user_id, ex.item_id, ex.day,
+               CASE WHEN ex.row_category_id IS NULL THEN NULL
+                    ELSE (coalesce(hi.buys_cum, 0) - coalesce(lo.buys_cum, 0))::DOUBLE
+               END AS {USER_CATEGORY_BUY_COUNT},
+               CASE WHEN ex.row_category_id IS NULL THEN NULL
+                    WHEN ex.user_buys_30 = 0 THEN NULL
+                    ELSE (coalesce(hi.buys_cum, 0) - coalesce(lo.buys_cum, 0))::DOUBLE
+                         / ex.user_buys_30
+               END AS {USER_CATEGORY_BUY_SHARE},
+               CASE WHEN ex.row_category_id IS NULL THEN NULL
+                    ELSE (coalesce(chi.n_cum, 0) - coalesce(clo.n_cum, 0))::DOUBLE
+               END AS {CATEGORY_ALL_BUY_COUNT},
+               CASE WHEN ex.row_category_id IS NULL OR coalesce(chi.n_cum, 0) = 0 THEN NULL
+                    WHEN chi.n_cum < {REPEAT_RAW_MIN}
+                    THEN (chi.repeat_cum + 1)::DOUBLE / (chi.n_cum + 2)
+                    ELSE chi.repeat_cum::DOUBLE / chi.n_cum
+               END AS {CATEGORY_ALL_REPEAT_SHARE}
+        FROM ex_cat ex
+        ASOF LEFT JOIN uc_buy_cum hi
+          ON ex.user_id = hi.user_id
+         AND ex.row_category_id = hi.category_id
+         AND ex.day > hi.day
+        ASOF LEFT JOIN uc_buy_cum lo
+          ON ex.user_id = lo.user_id
+         AND ex.row_category_id = lo.category_id
+         AND {cutoff(30)} > lo.day
+        ASOF LEFT JOIN cat_buy_cum chi
+          ON ex.row_category_id = chi.category_id
+         AND ex.day > chi.day
+        ASOF LEFT JOIN cat_buy_cum clo
+          ON ex.row_category_id = clo.category_id
+         AND {cutoff(30)} > clo.day
+    """)
+    n_feat = con.sql("SELECT count(*) FROM feat_user_category").fetchone()[0]
+    n_ex = con.sql("SELECT count(*) FROM ex").fetchone()[0]
+    if n_feat != n_ex:
+        raise SystemExit(f"user-category features row count {n_feat} != examples {n_ex}")
+    print("user-category purchases:", n_feat)
+
+
 def main():
     con = duckdb.connect()
     con.sql("SET preserve_insertion_order = false")
@@ -228,6 +359,8 @@ def main():
         n = con.sql(f"SELECT count(*) FROM feat_{who}").fetchone()[0]
         print(f"feat_{who}: {n}")
 
+    add_user_category_purchase_features(con)
+
     # Смена внутри [D-30, D) — два разных значения. Значение прямо перед окном
     # учитываем, записи с начала дня D и позже — нет.
     con.sql(f"""
@@ -273,6 +406,12 @@ def main():
             feature_sql.append(
                 "coalesce(ch.item__category__30__changed, 0)::DOUBLE AS item__category__30__changed"
             )
+    feature_sql.extend([
+        f"f_ucat.{USER_CATEGORY_BUY_COUNT}",
+        f"f_ucat.{USER_CATEGORY_BUY_SHARE}",
+        f"f_ucat.{CATEGORY_ALL_BUY_COUNT}",
+        f"f_ucat.{CATEGORY_ALL_REPEAT_SHARE}",
+    ])
 
     con.sql(f"""
         COPY (
@@ -283,6 +422,7 @@ def main():
             JOIN feat_item f_item USING (user_id, item_id, day)
             JOIN feat_user_item f_user_item USING (user_id, item_id, day)
             JOIN feat_category f_category USING (user_id, item_id, day)
+            JOIN feat_user_category f_ucat USING (user_id, item_id, day)
             LEFT JOIN item_changed ch
               ON ch.item_id = ex.item_id AND ch.day = ex.day
         ) TO '{CANDIDATES_PATH}' (FORMAT parquet)
@@ -299,6 +439,22 @@ def main():
         WHERE user__view__7__count > user__view__30__count
            OR item__transaction__14__count > item__transaction__30__count
            OR user__view__7__share < 0 OR user__view__7__share > 1
+           OR {USER_CATEGORY_BUY_COUNT} < 0
+           OR {USER_CATEGORY_BUY_SHARE} < 0
+           OR {USER_CATEGORY_BUY_SHARE} > 1
+           OR (user__transaction__30__count = 0 AND {USER_CATEGORY_BUY_SHARE} IS NOT NULL)
+           OR ({USER_CATEGORY_BUY_COUNT} IS NULL AND {USER_CATEGORY_BUY_SHARE} IS NOT NULL)
+           OR (
+                {USER_CATEGORY_BUY_COUNT} IS NOT NULL
+                AND user__transaction__30__count > 0
+                AND abs({USER_CATEGORY_BUY_SHARE} * user__transaction__30__count
+                        - {USER_CATEGORY_BUY_COUNT}) > 1e-6
+           )
+           OR ({USER_CATEGORY_BUY_COUNT} IS NULL) <> ({CATEGORY_ALL_BUY_COUNT} IS NULL)
+           OR {CATEGORY_ALL_BUY_COUNT} < 0
+           OR {CATEGORY_ALL_REPEAT_SHARE} < 0
+           OR {CATEGORY_ALL_REPEAT_SHARE} > 1
+           OR ({CATEGORY_ALL_BUY_COUNT} IS NULL AND {CATEGORY_ALL_REPEAT_SHARE} IS NOT NULL)
     """).fetchone()[0]
     if bad:
         raise SystemExit(f"feature sanity check failed on {bad} rows")

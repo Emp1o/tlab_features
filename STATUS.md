@@ -88,7 +88,7 @@ NULL у признака 5 на val: 0.9919. Нулей нет.
 
 NULL у обоих признаков на val: 0.1152. В 261 из 617 групп available различается между товарами, доля 0.4230.
 
-Подробности: `report/results.md`, `report/lgbm_comparison.csv`, `report/baseline_diffs.csv`, `report/category_comparison.csv`, `report/category_recency_comparison.csv`, `report/category_recency_rates.csv`, `report/feature_selection.csv`.
+Подробности: `report/results.md`, `report/lgbm_comparison.csv`, `report/baseline_diffs.csv`, `report/category_comparison.csv`, `report/category_recency_comparison.csv`, `report/category_recency_rates.csv`, `report/availability_comparison.csv`, `report/feature_selection.csv`.
 
 ## Вывод Максима (19.10.2026)
 

@@ -22,6 +22,7 @@ from train_lgbm import (
     bootstrap_indices,
     diff_ci,
     per_group_metrics,
+    same_groups,
 )
 
 EVENTS_PATH = ROOT / "data" / "events_clean.parquet"
@@ -287,10 +288,8 @@ def evaluate_period(frame, period, train_last, val_first, val_last, val_split, e
         fitted[name] = grouped
     n_groups = len(fitted["A_new"]["ndcg3"])
     for name, grouped in fitted.items():
-        if len(grouped["ndcg3"]) != n_groups:
-            raise RuntimeError(f"{period} {name}: другое число групп")
-        if not np.array_equal(grouped["user_id"], fitted["A_new"]["user_id"]):
-            raise RuntimeError(f"{period} {name}: другие группы")
+        if not same_groups(grouped, fitted["A_new"]):
+            raise RuntimeError(f"{period} {name}: другие группы (user_id, day)")
     indices = bootstrap_indices(n_groups, N_BOOTSTRAP, BOOTSTRAP_SEED)
     pairs = (
         ("A_new_plus", "A_new", "A_new_plus-A_new"),

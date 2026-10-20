@@ -349,6 +349,84 @@ Test в этом прогоне не читался. A_new, отборщик и 
 
 Post-hoc test: один описательный прогон C, manual и модели автоокон (и уже посчитанных A_new и popularity) на test. Он не меняет предрегистрированный вывод основного test. Выход — `report/test_posthoc.csv`, с теми же предохранителями, что у `scripts/run_test.py`: sha256 входных файлов из заморозки, окно 2015-09-04 — 2015-09-17, 206 150 строк, ключ группы (user_id, day), запрет перезаписи. Модель автоокон учится на `split = 'train'` и day ≤ 2015-08-20, на признаках, отобранных на этом же окне. A_new заново другим протоколом не учится: чтобы получить парные групповые NDCG, тот же замороженный протокол (80 деревьев, сиды 42–46, колонки по алфавиту, train по 2015-08-20) повторяется только для сверки. Если NDCG@3, NDCG@5, MRR или AUC расходятся с `report/test_run.csv` больше чем на 1e-12, скрипт останавливается и файл не пишет. Опубликованные числа A_new не заменяются. Popularity пересчитывается тем же запросом и сверяется так же. Бутстреп против A_new и против popularity — описание, не новый критерий.
 
+## Заморозка автопоиска (20.10.2026)
+
+Записано после отбора и val и до единственного post-hoc test. `scripts/run_test_posthoc.py` ещё не запускался. Этот коммит не меняет `src/` и `scripts/`: они как в `2a4a2d617ab17097a2098ac594699db507bc318f`. Предрегистрация автопоиска: `9b36fc6007452872619b8837fd64ce2bf5662c2f`.
+
+Правило val2 применено. NDCG@3 (W_auto − A_new) на val2, 589 групп: 0.002321 (−0.008281–0.012552). Нижняя граница не > 0: остаётся A_new. A_new — 21 признак и 80 деревьев. C — 152 и 78. manual — 27 и 89. Эти числа деревьев заново не выбирались.
+
+W_auto для правила — отбор на train2 (day ≤ 2015-08-06), порог силы 0.046701, 29 признаков. Деревьев 90: медиана best_iteration на val1, итерации 106, 90, 81, 120, 76. Список в порядке силы:
+
+1. `user_item__addtocart__1__count`
+2. `user_item__addtocart__3__count`
+3. `user_item__addtocart__7__count`
+4. `user_item__addtocart__30__count`
+5. `user_item__view__1__count`
+6. `user_item__view__3__count`
+7. `user_item__view__7__count`
+8. `item__addtocart__14__count`
+9. `item__addtocart__3__count`
+10. `item__addtocart__30__count`
+11. `item__addtocart__5__count`
+12. `item__view__14__count`
+13. `item__addtocart__1__count`
+14. `item__view__3__count`
+15. `item__view__1__count`
+16. `item__addtocart__7__share`
+17. `user_item__addtocart__7_30__trend`
+18. `item__transaction__21__count`
+19. `item__transaction__10__count`
+20. `item__view__all__recency`
+21. `item__transaction__3__count`
+22. `item__transaction__5__count`
+23. `user_item__addtocart__all__recency`
+24. `item__addtocart__all__recency`
+25. `user_item__view__7_30__trend`
+26. `item__available__asof`
+27. `item__transaction__1__share`
+28. `user_item__transaction__7_30__trend`
+29. `user_item__transaction__1__count`
+
+Модель post-hoc test — отбор на train по 2015-08-20, порог силы 0.046880, 28 признаков, в коде `W_TEST_FEATURES`. Деревьев 92: своя медиана best_iteration на val1, итерации 92, 92, 113, 125, 81. Jaccard со списком train2: 0.781250 (пересечение 25, объединение 32). Только train2: `item__addtocart__5__count`, `item__addtocart__7__share`, `user_item__transaction__1__count`, `user_item__transaction__7_30__trend`. Только полный train: `item__addtocart__7__count`, `item__transaction__7_30__trend`, `item__view__5__share`. Список полного train в порядке силы:
+
+1. `user_item__addtocart__1__count`
+2. `user_item__addtocart__3__count`
+3. `user_item__addtocart__7__count`
+4. `user_item__addtocart__30__count`
+5. `user_item__view__1__count`
+6. `user_item__view__3__count`
+7. `user_item__view__7__count`
+8. `item__addtocart__14__count`
+9. `item__addtocart__3__count`
+10. `item__addtocart__30__count`
+11. `item__addtocart__7__count`
+12. `item__addtocart__1__count`
+13. `item__view__14__count`
+14. `item__view__3__count`
+15. `item__view__5__share`
+16. `item__view__1__count`
+17. `item__transaction__21__count`
+18. `item__transaction__10__count`
+19. `item__view__all__recency`
+20. `user_item__addtocart__7_30__trend`
+21. `item__transaction__3__count`
+22. `item__transaction__5__count`
+23. `item__transaction__7_30__trend`
+24. `item__available__asof`
+25. `item__addtocart__all__recency`
+26. `user_item__addtocart__all__recency`
+27. `item__transaction__1__share`
+28. `user_item__view__7_30__trend`
+
+sha256 файлов автопоиска:
+
+| файл | sha256 |
+|---|---|
+| `data/feature_candidates_wsearch.parquet` | `da99b223cbe819f65b2a7b1f49ada41b609b808ef9b7f396a500c48ca8358fe4` |
+| `report/window_search.csv` | `33f461a0ce924c5124536fca77000eaa0ecd208ac1eaf1214ff0a9688d0ca466` |
+| `report/window_selection_train.csv` | `8a302f39777284559eb2fa6c4d7ecb6325b08e88de9aafb4df85f85b5dfb7159` |
+| `report/window_selection_train2.csv` | `df6b0c497dd2789a7b303e67ff9c8ee6dce01273f184c40ad1be9bfbd4d3a7a6` |
+
 ## Следующие шаги
 
 1. Выводы Максима — в пустой раздел README «Выводы (Максим)».
@@ -372,3 +450,4 @@ Post-hoc test: один описательный прогон C, manual и мо�
 - 20.10.2026: один прогон test. NDCG@3 A_new 0.6630, popularity 0.6498, разница 0.0131 (−0.0092–0.0361), 584 группы. Интервал задевает 0. Предрегистрированный текст этого исхода записан в «Результат test».
 - 20.10.2026: аудит на val1 и val2, test не читался. Ручные 27 признаков, фиксированные 89 деревьев; C, 152 признака, фиксированные 78. A_new остаётся на 80. В метрики добавлены LogLoss, Recall@3 и Recall@5. Замер генерации, отбора, обучения и вывода: `report/cost.csv`. `scripts/run_test_posthoc.py` написан и не запускался. Список A_new и отборщик не менялись.
 - 20.10.2026: предрегистрация автопоиска окон и post-hoc test записана до расчётов. Правило: W_auto заменяет A_new только если на val2 нижняя граница NDCG@3 (W_auto − A_new) > 0.
+- 20.10.2026: заморозка автопоиска до post-hoc test. W_auto — 29 признаков train2 и 90 деревьев. Список train по 2015-08-20 — 28 признаков и 92 дерева, Jaccard 0.781250. На val2 нижняя граница не > 0: остаётся A_new. `scripts/run_test_posthoc.py` не запускался.

@@ -3,16 +3,47 @@ import duckdb
 # События до дня D не было. 999 больше длины лога (138 дней), поэтому «никогда»
 # не путается с реальной паузой и не хранится как NULL.
 RECENCY_MISSING = 999
+DEFAULT_PATH = "data/features_manual.parquet"
 
-con = duckdb.connect()
-con.sql("CREATE TABLE ex AS SELECT * FROM 'data/examples.parquet'")
+MANUAL_FEATURES = (
+    "user_views_7d",
+    "user_views_30d",
+    "user_carts_7d",
+    "user_carts_30d",
+    "user_buys_7d",
+    "user_buys_30d",
+    "user_conv_30d",
+    "user_days_since_activity",
+    "item_views_1d",
+    "item_views_7d",
+    "item_views_30d",
+    "item_carts_1d",
+    "item_carts_7d",
+    "item_carts_30d",
+    "item_buys_1d",
+    "item_buys_7d",
+    "item_buys_30d",
+    "item_conv_30d",
+    "ui_views_1d",
+    "ui_views_7d",
+    "ui_views_30d",
+    "ui_days_since_view",
+    "ui_cart_before",
+    "uc_views_30d",
+    "uc_buys_30d",
+    "uc_view_share_30d",
+    "cat_views_7d",
+)
+
+con = None
 
 
-def prefix(name, path, keys, metrics):
+def prefix(name, path, keys, metrics, day_cap=None):
     """Накопленные суммы по дням.
 
     Сумма на [D-w, D) — префикс последнего дня до D минус префикс последнего дня
     до D-w. ASOF находит эти два дня, без соединения каждого прошлого дня с каждым примером.
+    Без day_cap запрос тот же, что у замороженного файла.
     """
     key_sql = ", ".join(keys)
     metric_sql = ", ".join(metrics)
@@ -20,10 +51,11 @@ def prefix(name, path, keys, metrics):
         f"sum({m}) OVER (PARTITION BY {key_sql} ORDER BY day) AS {m}_cum"
         for m in metrics
     )
+    where = "" if day_cap is None else f" WHERE day <= DATE '{day_cap}'"
     con.sql(f"""
         CREATE TABLE {name} AS
         SELECT {key_sql}, day, {metric_sql}, {cum_sql}
-        FROM '{path}'
+        FROM '{path}'{where}
         ORDER BY {key_sql}, day
     """)
 
@@ -41,141 +73,166 @@ def cutoff(days):
     return f"CAST(ex.day - INTERVAL {days} DAY AS DATE)"
 
 
-prefix("user_cum", "data/daily_user.parquet", ["user_id"], ["views", "carts", "buys"])
-prefix("item_cum", "data/daily_item.parquet", ["item_id"], ["views", "carts", "buys"])
-prefix("ui_cum", "data/daily_user_item.parquet", ["user_id", "item_id"], ["views", "carts", "buys"])
-prefix("uc_cum", "data/daily_user_cat.parquet", ["user_id", "category_id"], ["views", "buys"])
-prefix("cat_cum", "data/daily_cat.parquet", ["category_id"], ["views"])
-con.sql("""
-    CREATE TABLE ui_view_days AS
-    SELECT user_id, item_id, day
-    FROM 'data/daily_user_item.parquet'
-    WHERE views > 0
-    ORDER BY user_id, item_id, day
-""")
-print("prefix tables ready")
+def main(output_path=DEFAULT_PATH, examples_where=None, max_day=None):
+    """27 ручных признаков.
 
-con.sql(f"""
-    CREATE TABLE feat_user AS
-    SELECT ex.user_id, ex.item_id, ex.day,
-           {span('u_hi', 'u_7', 'views')} AS user_views_7d,
-           {span('u_hi', 'u_30', 'views')} AS user_views_30d,
-           {span('u_hi', 'u_7', 'carts')} AS user_carts_7d,
-           {span('u_hi', 'u_30', 'carts')} AS user_carts_30d,
-           {span('u_hi', 'u_7', 'buys')} AS user_buys_7d,
-           {span('u_hi', 'u_30', 'buys')} AS user_buys_30d,
-           CASE WHEN {span('u_hi', 'u_30', 'views')} = 0 THEN 0.0
-                ELSE ({span('u_hi', 'u_30', 'carts')} + {span('u_hi', 'u_30', 'buys')})::DOUBLE
-                     / {span('u_hi', 'u_30', 'views')}
-           END AS user_conv_30d,
-           coalesce(date_diff('day', u_hi.day, ex.day), {RECENCY_MISSING})
-               AS user_days_since_activity
-    FROM ex
-    {asof_before('u_hi', 'user_cum', ['user_id'], 'ex.day')}
-    {asof_before('u_7', 'user_cum', ['user_id'], cutoff(7))}
-    {asof_before('u_30', 'user_cum', ['user_id'], cutoff(30))}
-""")
-print("feat_user:", con.sql("SELECT count(*) FROM feat_user").fetchone()[0])
+    Без аргументов пишется data/features_manual.parquet, как раньше.
+    examples_where и max_day нужны только для замера времени: официальный
+    файл при этом не перезаписывается, строки test в ex не попадают.
+    """
+    global con
+    if (examples_where or max_day is not None) and str(output_path) == DEFAULT_PATH:
+        raise RuntimeError("урезанный прогон не перезаписывает data/features_manual.parquet")
+    con = duckdb.connect()
+    filters = []
+    if examples_where:
+        filters.append(f"({examples_where})")
+    if max_day is not None:
+        filters.append(f"day <= DATE '{max_day}'")
+    where = "" if not filters else " WHERE " + " AND ".join(filters)
+    con.sql(f"CREATE TABLE ex AS SELECT * FROM 'data/examples.parquet'{where}")
 
-con.sql(f"""
-    CREATE TABLE feat_item AS
-    SELECT ex.user_id, ex.item_id, ex.day,
-           {span('i_hi', 'i_1', 'views')} AS item_views_1d,
-           {span('i_hi', 'i_7', 'views')} AS item_views_7d,
-           {span('i_hi', 'i_30', 'views')} AS item_views_30d,
-           {span('i_hi', 'i_1', 'carts')} AS item_carts_1d,
-           {span('i_hi', 'i_7', 'carts')} AS item_carts_7d,
-           {span('i_hi', 'i_30', 'carts')} AS item_carts_30d,
-           {span('i_hi', 'i_1', 'buys')} AS item_buys_1d,
-           {span('i_hi', 'i_7', 'buys')} AS item_buys_7d,
-           {span('i_hi', 'i_30', 'buys')} AS item_buys_30d,
-           CASE WHEN {span('i_hi', 'i_30', 'views')} = 0 THEN 0.0
-                ELSE ({span('i_hi', 'i_30', 'carts')} + {span('i_hi', 'i_30', 'buys')})::DOUBLE
-                     / {span('i_hi', 'i_30', 'views')}
-           END AS item_conv_30d
-    FROM ex
-    {asof_before('i_hi', 'item_cum', ['item_id'], 'ex.day')}
-    {asof_before('i_1', 'item_cum', ['item_id'], cutoff(1))}
-    {asof_before('i_7', 'item_cum', ['item_id'], cutoff(7))}
-    {asof_before('i_30', 'item_cum', ['item_id'], cutoff(30))}
-""")
-print("feat_item:", con.sql("SELECT count(*) FROM feat_item").fetchone()[0])
+    prefix("user_cum", "data/daily_user.parquet", ["user_id"], ["views", "carts", "buys"], max_day)
+    prefix("item_cum", "data/daily_item.parquet", ["item_id"], ["views", "carts", "buys"], max_day)
+    prefix("ui_cum", "data/daily_user_item.parquet", ["user_id", "item_id"], ["views", "carts", "buys"], max_day)
+    prefix("uc_cum", "data/daily_user_cat.parquet", ["user_id", "category_id"], ["views", "buys"], max_day)
+    prefix("cat_cum", "data/daily_cat.parquet", ["category_id"], ["views"], max_day)
+    view_day = "views > 0" if max_day is None else f"views > 0 AND day <= DATE '{max_day}'"
+    con.sql(f"""
+        CREATE TABLE ui_view_days AS
+        SELECT user_id, item_id, day
+        FROM 'data/daily_user_item.parquet'
+        WHERE {view_day}
+        ORDER BY user_id, item_id, day
+    """)
+    print("prefix tables ready")
 
-con.sql(f"""
-    CREATE TABLE feat_ui AS
-    SELECT ex.user_id, ex.item_id, ex.day,
-           {span('p_hi', 'p_1', 'views')} AS ui_views_1d,
-           {span('p_hi', 'p_7', 'views')} AS ui_views_7d,
-           {span('p_hi', 'p_30', 'views')} AS ui_views_30d,
-           coalesce(date_diff('day', seen.day, ex.day), {RECENCY_MISSING})
-               AS ui_days_since_view,
-           (coalesce(p_hi.carts_cum, 0) > 0)::INTEGER AS ui_cart_before
-    FROM ex
-    {asof_before('p_hi', 'ui_cum', ['user_id', 'item_id'], 'ex.day')}
-    {asof_before('p_1', 'ui_cum', ['user_id', 'item_id'], cutoff(1))}
-    {asof_before('p_7', 'ui_cum', ['user_id', 'item_id'], cutoff(7))}
-    {asof_before('p_30', 'ui_cum', ['user_id', 'item_id'], cutoff(30))}
-    {asof_before('seen', 'ui_view_days', ['user_id', 'item_id'], 'ex.day')}
-""")
-print("feat_ui:", con.sql("SELECT count(*) FROM feat_ui").fetchone()[0])
-
-# Числа считаются для всех строк. Если категория не была известна до дня D,
-# в финальном SELECT они снова NULL: запасная категория взята из более поздней записи.
-con.sql(f"""
-    CREATE TABLE feat_uc AS
-    SELECT ex.user_id, ex.item_id, ex.day,
-           {span('c_hi', 'c_30', 'views')} AS uc_views_30d,
-           {span('c_hi', 'c_30', 'buys')} AS uc_buys_30d
-    FROM ex
-    {asof_before('c_hi', 'uc_cum', ['user_id', 'category_id'], 'ex.day')}
-    {asof_before('c_30', 'uc_cum', ['user_id', 'category_id'], cutoff(30))}
-""")
-con.sql(f"""
-    CREATE TABLE feat_cat AS
-    SELECT ex.user_id, ex.item_id, ex.day,
-           {span('g_hi', 'g_7', 'views')} AS cat_views_7d
-    FROM ex
-    {asof_before('g_hi', 'cat_cum', ['category_id'], 'ex.day')}
-    {asof_before('g_7', 'cat_cum', ['category_id'], cutoff(7))}
-""")
-print("feat_uc:", con.sql("SELECT count(*) FROM feat_uc").fetchone()[0])
-
-con.sql("""
-    COPY (
-        SELECT ex.user_id, ex.item_id, ex.day, ex.split, ex.label, ex.rank_group,
-               u.user_views_7d, u.user_views_30d,
-               u.user_carts_7d, u.user_carts_30d,
-               u.user_buys_7d, u.user_buys_30d,
-               u.user_conv_30d, u.user_days_since_activity,
-               i.item_views_1d, i.item_views_7d, i.item_views_30d,
-               i.item_carts_1d, i.item_carts_7d, i.item_carts_30d,
-               i.item_buys_1d, i.item_buys_7d, i.item_buys_30d,
-               i.item_conv_30d,
-               ui.ui_views_1d, ui.ui_views_7d, ui.ui_views_30d,
-               ui.ui_days_since_view, ui.ui_cart_before,
-               CASE WHEN ex.category_fallback OR ex.category_id IS NULL THEN NULL
-                    ELSE uc.uc_views_30d END AS uc_views_30d,
-               CASE WHEN ex.category_fallback OR ex.category_id IS NULL THEN NULL
-                    ELSE uc.uc_buys_30d END AS uc_buys_30d,
-               CASE WHEN ex.category_fallback OR ex.category_id IS NULL THEN NULL
-                    WHEN u.user_views_30d = 0 THEN 0.0
-                    ELSE uc.uc_views_30d::DOUBLE / u.user_views_30d
-               END AS uc_view_share_30d,
-               CASE WHEN ex.category_fallback OR ex.category_id IS NULL THEN NULL
-                    ELSE c.cat_views_7d END AS cat_views_7d
+    con.sql(f"""
+        CREATE TABLE feat_user AS
+        SELECT ex.user_id, ex.item_id, ex.day,
+               {span('u_hi', 'u_7', 'views')} AS user_views_7d,
+               {span('u_hi', 'u_30', 'views')} AS user_views_30d,
+               {span('u_hi', 'u_7', 'carts')} AS user_carts_7d,
+               {span('u_hi', 'u_30', 'carts')} AS user_carts_30d,
+               {span('u_hi', 'u_7', 'buys')} AS user_buys_7d,
+               {span('u_hi', 'u_30', 'buys')} AS user_buys_30d,
+               CASE WHEN {span('u_hi', 'u_30', 'views')} = 0 THEN 0.0
+                    ELSE ({span('u_hi', 'u_30', 'carts')} + {span('u_hi', 'u_30', 'buys')})::DOUBLE
+                         / {span('u_hi', 'u_30', 'views')}
+               END AS user_conv_30d,
+               coalesce(date_diff('day', u_hi.day, ex.day), {RECENCY_MISSING})
+                   AS user_days_since_activity
         FROM ex
-        JOIN feat_user u USING (user_id, item_id, day)
-        JOIN feat_item i USING (user_id, item_id, day)
-        JOIN feat_ui ui USING (user_id, item_id, day)
-        JOIN feat_uc uc USING (user_id, item_id, day)
-        JOIN feat_cat c USING (user_id, item_id, day)
-    ) TO 'data/features_manual.parquet' (FORMAT parquet)
-""")
+        {asof_before('u_hi', 'user_cum', ['user_id'], 'ex.day')}
+        {asof_before('u_7', 'user_cum', ['user_id'], cutoff(7))}
+        {asof_before('u_30', 'user_cum', ['user_id'], cutoff(30))}
+    """)
+    print("feat_user:", con.sql("SELECT count(*) FROM feat_user").fetchone()[0])
 
-n = con.sql("SELECT count(*) FROM 'data/features_manual.parquet'").fetchone()[0]
-ncols = len(con.sql("DESCRIBE SELECT * FROM 'data/features_manual.parquet'").fetchall())
-print(f"features_manual: {n} rows, {ncols} columns")
-con.sql("""
-    SELECT round(avg(uc_views_30d IS NULL::INT), 4) AS uc_null_share
-    FROM 'data/features_manual.parquet'
-""").show()
+    con.sql(f"""
+        CREATE TABLE feat_item AS
+        SELECT ex.user_id, ex.item_id, ex.day,
+               {span('i_hi', 'i_1', 'views')} AS item_views_1d,
+               {span('i_hi', 'i_7', 'views')} AS item_views_7d,
+               {span('i_hi', 'i_30', 'views')} AS item_views_30d,
+               {span('i_hi', 'i_1', 'carts')} AS item_carts_1d,
+               {span('i_hi', 'i_7', 'carts')} AS item_carts_7d,
+               {span('i_hi', 'i_30', 'carts')} AS item_carts_30d,
+               {span('i_hi', 'i_1', 'buys')} AS item_buys_1d,
+               {span('i_hi', 'i_7', 'buys')} AS item_buys_7d,
+               {span('i_hi', 'i_30', 'buys')} AS item_buys_30d,
+               CASE WHEN {span('i_hi', 'i_30', 'views')} = 0 THEN 0.0
+                    ELSE ({span('i_hi', 'i_30', 'carts')} + {span('i_hi', 'i_30', 'buys')})::DOUBLE
+                         / {span('i_hi', 'i_30', 'views')}
+               END AS item_conv_30d
+        FROM ex
+        {asof_before('i_hi', 'item_cum', ['item_id'], 'ex.day')}
+        {asof_before('i_1', 'item_cum', ['item_id'], cutoff(1))}
+        {asof_before('i_7', 'item_cum', ['item_id'], cutoff(7))}
+        {asof_before('i_30', 'item_cum', ['item_id'], cutoff(30))}
+    """)
+    print("feat_item:", con.sql("SELECT count(*) FROM feat_item").fetchone()[0])
+
+    con.sql(f"""
+        CREATE TABLE feat_ui AS
+        SELECT ex.user_id, ex.item_id, ex.day,
+               {span('p_hi', 'p_1', 'views')} AS ui_views_1d,
+               {span('p_hi', 'p_7', 'views')} AS ui_views_7d,
+               {span('p_hi', 'p_30', 'views')} AS ui_views_30d,
+               coalesce(date_diff('day', seen.day, ex.day), {RECENCY_MISSING})
+                   AS ui_days_since_view,
+               (coalesce(p_hi.carts_cum, 0) > 0)::INTEGER AS ui_cart_before
+        FROM ex
+        {asof_before('p_hi', 'ui_cum', ['user_id', 'item_id'], 'ex.day')}
+        {asof_before('p_1', 'ui_cum', ['user_id', 'item_id'], cutoff(1))}
+        {asof_before('p_7', 'ui_cum', ['user_id', 'item_id'], cutoff(7))}
+        {asof_before('p_30', 'ui_cum', ['user_id', 'item_id'], cutoff(30))}
+        {asof_before('seen', 'ui_view_days', ['user_id', 'item_id'], 'ex.day')}
+    """)
+    print("feat_ui:", con.sql("SELECT count(*) FROM feat_ui").fetchone()[0])
+
+    # Числа считаются для всех строк. Если категория не была известна до дня D,
+    # в финальном SELECT они снова NULL: запасная категория взята из более поздней записи.
+    con.sql(f"""
+        CREATE TABLE feat_uc AS
+        SELECT ex.user_id, ex.item_id, ex.day,
+               {span('c_hi', 'c_30', 'views')} AS uc_views_30d,
+               {span('c_hi', 'c_30', 'buys')} AS uc_buys_30d
+        FROM ex
+        {asof_before('c_hi', 'uc_cum', ['user_id', 'category_id'], 'ex.day')}
+        {asof_before('c_30', 'uc_cum', ['user_id', 'category_id'], cutoff(30))}
+    """)
+    con.sql(f"""
+        CREATE TABLE feat_cat AS
+        SELECT ex.user_id, ex.item_id, ex.day,
+               {span('g_hi', 'g_7', 'views')} AS cat_views_7d
+        FROM ex
+        {asof_before('g_hi', 'cat_cum', ['category_id'], 'ex.day')}
+        {asof_before('g_7', 'cat_cum', ['category_id'], cutoff(7))}
+    """)
+    print("feat_uc:", con.sql("SELECT count(*) FROM feat_uc").fetchone()[0])
+
+    con.sql(f"""
+        COPY (
+            SELECT ex.user_id, ex.item_id, ex.day, ex.split, ex.label, ex.rank_group,
+                   u.user_views_7d, u.user_views_30d,
+                   u.user_carts_7d, u.user_carts_30d,
+                   u.user_buys_7d, u.user_buys_30d,
+                   u.user_conv_30d, u.user_days_since_activity,
+                   i.item_views_1d, i.item_views_7d, i.item_views_30d,
+                   i.item_carts_1d, i.item_carts_7d, i.item_carts_30d,
+                   i.item_buys_1d, i.item_buys_7d, i.item_buys_30d,
+                   i.item_conv_30d,
+                   ui.ui_views_1d, ui.ui_views_7d, ui.ui_views_30d,
+                   ui.ui_days_since_view, ui.ui_cart_before,
+                   CASE WHEN ex.category_fallback OR ex.category_id IS NULL THEN NULL
+                        ELSE uc.uc_views_30d END AS uc_views_30d,
+                   CASE WHEN ex.category_fallback OR ex.category_id IS NULL THEN NULL
+                        ELSE uc.uc_buys_30d END AS uc_buys_30d,
+                   CASE WHEN ex.category_fallback OR ex.category_id IS NULL THEN NULL
+                        WHEN u.user_views_30d = 0 THEN 0.0
+                        ELSE uc.uc_views_30d::DOUBLE / u.user_views_30d
+                   END AS uc_view_share_30d,
+                   CASE WHEN ex.category_fallback OR ex.category_id IS NULL THEN NULL
+                        ELSE c.cat_views_7d END AS cat_views_7d
+            FROM ex
+            JOIN feat_user u USING (user_id, item_id, day)
+            JOIN feat_item i USING (user_id, item_id, day)
+            JOIN feat_ui ui USING (user_id, item_id, day)
+            JOIN feat_uc uc USING (user_id, item_id, day)
+            JOIN feat_cat c USING (user_id, item_id, day)
+        ) TO '{output_path}' (FORMAT parquet)
+    """)
+
+    n = con.sql(f"SELECT count(*) FROM '{output_path}'").fetchone()[0]
+    ncols = len(con.sql(f"DESCRIBE SELECT * FROM '{output_path}'").fetchall())
+    print(f"features_manual: {n} rows, {ncols} columns")
+    con.sql(f"""
+        SELECT round(avg(uc_views_30d IS NULL::INT), 4) AS uc_null_share
+        FROM '{output_path}'
+    """).show()
+    return output_path
+
+
+if __name__ == "__main__":
+    main()

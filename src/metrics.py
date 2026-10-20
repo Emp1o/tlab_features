@@ -49,6 +49,7 @@ def evaluate(df, score_col, is_probability=False):
     groups = list(_rank_groups(df, score_col))
     for k in (3, 5, 10):
         res[f"NDCG@{k}"] = np.mean([ndcg_at_k(g, k) for g in groups])
+    res["Recall@3"] = np.mean([recall_at_k(g, 3) for g in groups])
     res["Recall@5"] = np.mean([recall_at_k(g, 5) for g in groups])
     res["MRR"] = np.mean([reciprocal_rank(g) for g in groups])
     res["groups"] = len(groups)

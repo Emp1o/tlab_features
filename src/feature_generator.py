@@ -29,11 +29,13 @@ ITEM_AVAILABLE_SWITCHES = "item__available__switches"
 REPEAT_RAW_MIN = 5
 
 
-def prefix(con, name, path, keys):
+def prefix(con, name, path, keys, day_cap=None):
     """Накопленные числа событий по дням.
 
     Сумма на [D-w, D) — префикс последнего дня до D минус префикс последнего
     дня до D-w. Эти два дня находит ASOF.
+    day_cap отсекает более поздние дни источника. Без него запрос прежний:
+    будущие дни префикс прошлых дней не меняют, но в прогон их можно не читать.
     """
     key_sql = ", ".join(keys)
     cum = ", ".join(
@@ -41,10 +43,11 @@ def prefix(con, name, path, keys):
         for _, metric in EVENTS
     )
     raw = ", ".join(metric for _, metric in EVENTS)
+    where = "" if day_cap is None else f" WHERE day <= DATE '{day_cap}'"
     con.sql(f"""
         CREATE TABLE {name} AS
         SELECT {key_sql}, day, {raw}, {cum}
-        FROM '{path}'
+        FROM '{path}'{where}
         ORDER BY {key_sql}, day
     """)
 
@@ -62,17 +65,18 @@ def cutoff(days):
     return f"CAST(ex.day - INTERVAL {days} DAY AS DATE)"
 
 
-def event_days(con, name, path, keys):
+def event_days(con, name, path, keys, day_cap=None):
     """Строка есть только в те дни, когда это событие случилось."""
     key_sql = ", ".join(keys)
     tables = {}
+    day_sql = "" if day_cap is None else f" AND day <= DATE '{day_cap}'"
     for event, metric in EVENTS:
         table = f"{name}_{event}"
         con.sql(f"""
             CREATE TABLE {table} AS
             SELECT {key_sql}, day
             FROM '{path}'
-            WHERE {metric} > 0
+            WHERE {metric} > 0{day_sql}
             ORDER BY {key_sql}, day
         """)
         tables[event] = table
@@ -145,7 +149,7 @@ def nunique_columns(who):
     return ",\n".join(lines)
 
 
-def add_user_category_purchase_features(con):
+def add_user_category_purchase_features(con, day_cap=None):
     """Пять признаков покупок в категории товара строки.
 
     Категория строки — последнее categoryid с timestamp строго до начала дня D.
@@ -159,13 +163,14 @@ def add_user_category_purchase_features(con):
     Давность — число дней между днём группы и днём последней покупки этого
     пользователя в категории строки. Покупки дня группы не входят. Не покупал — NULL.
     """
-    con.sql("""
+    buy_day = "" if day_cap is None else f" AND day <= DATE '{day_cap}'"
+    con.sql(f"""
         CREATE TABLE buy_at_ts AS
         SELECT e.user_id, e.ts, e.day, c.category_id
         FROM (
             SELECT user_id, item_id, ts, day
             FROM 'data/events_clean.parquet'
-            WHERE event = 'transaction'
+            WHERE event = 'transaction'{buy_day}
         ) e
         ASOF LEFT JOIN item_cat c
           ON e.item_id = c.item_id AND e.ts >= c.ts
@@ -351,10 +356,21 @@ def add_availability_features(con):
     print("availability:", n_feat)
 
 
-def main():
+def main(output_path=None, examples_where=None, max_day=None):
+    """Полный пул кандидатов.
+
+    Без аргументов путь и запросы те же, что у замороженного файла.
+    examples_where и max_day — для замера времени на train+val: официальный
+    parquet при этом не перезаписывается, строки test в таблицу ex не попадают.
+    """
+    if output_path is None:
+        output_path = CANDIDATES_PATH
+    if (examples_where or max_day is not None) and str(output_path) == CANDIDATES_PATH:
+        raise RuntimeError("урезанный прогон не перезаписывает data/feature_candidates.parquet")
     con = duckdb.connect()
     con.sql("SET preserve_insertion_order = false")
-    con.sql("CREATE TABLE ex AS SELECT * FROM 'data/examples.parquet'")
+    where = "" if not examples_where else f" WHERE {examples_where}"
+    con.sql(f"CREATE TABLE ex AS SELECT * FROM 'data/examples.parquet'{where}")
     con.sql(f"""
         CREATE TABLE item_cat AS
         SELECT item_id, ts, category_id
@@ -363,16 +379,16 @@ def main():
         ORDER BY item_id, ts
     """)
 
-    prefix(con, "user_cum", "data/daily_user.parquet", ["user_id"])
-    prefix(con, "item_cum", "data/daily_item.parquet", ["item_id"])
-    prefix(con, "ui_cum", "data/daily_user_item.parquet", ["user_id", "item_id"])
-    prefix(con, "cat_cum", "data/daily_cat.parquet", ["category_id"])
-    user_days = event_days(con, "user_ev", "data/daily_user.parquet", ["user_id"])
-    item_days = event_days(con, "item_ev", "data/daily_item.parquet", ["item_id"])
+    prefix(con, "user_cum", "data/daily_user.parquet", ["user_id"], max_day)
+    prefix(con, "item_cum", "data/daily_item.parquet", ["item_id"], max_day)
+    prefix(con, "ui_cum", "data/daily_user_item.parquet", ["user_id", "item_id"], max_day)
+    prefix(con, "cat_cum", "data/daily_cat.parquet", ["category_id"], max_day)
+    user_days = event_days(con, "user_ev", "data/daily_user.parquet", ["user_id"], max_day)
+    item_days = event_days(con, "item_ev", "data/daily_item.parquet", ["item_id"], max_day)
     ui_days = event_days(
-        con, "ui_ev", "data/daily_user_item.parquet", ["user_id", "item_id"]
+        con, "ui_ev", "data/daily_user_item.parquet", ["user_id", "item_id"], max_day
     )
-    cat_days = event_days(con, "cat_ev", "data/daily_cat.parquet", ["category_id"])
+    cat_days = event_days(con, "cat_ev", "data/daily_cat.parquet", ["category_id"], max_day)
     print("prefix tables ready")
 
     # Число разных товаров вычитанием префиксов не получить.
@@ -385,7 +401,7 @@ def main():
         LEFT JOIN 'data/daily_user_item.parquet' d
           ON d.user_id = k.user_id
          AND d.day < k.day
-         AND d.day >= CAST(k.day - INTERVAL 30 DAY AS DATE)
+         AND d.day >= CAST(k.day - INTERVAL 30 DAY AS DATE){"" if max_day is None else f" AND d.day <= DATE '{max_day}'"}
         GROUP BY k.user_id, k.day
     """)
     print("user nunique:", con.sql("SELECT count(*) FROM user_nunique").fetchone()[0])
@@ -395,7 +411,7 @@ def main():
         SELECT d.item_id, d.day, d.views, d.carts, d.buys, c.category_id
         FROM (
             SELECT *, epoch_ms(CAST(day AS TIMESTAMP)) + {DAY_SHIFT_MS} AS day_start_ms
-            FROM 'data/daily_item.parquet'
+            FROM 'data/daily_item.parquet'{"" if max_day is None else f" WHERE day <= DATE '{max_day}'"}
         ) d
         ASOF LEFT JOIN item_cat c
           ON d.item_id = c.item_id AND d.day_start_ms >= c.ts
@@ -415,7 +431,7 @@ def main():
         LEFT JOIN item_day_cat d
           ON d.category_id = k.category_id
          AND d.day < k.day
-         AND d.day >= CAST(k.day - INTERVAL 30 DAY AS DATE)
+         AND d.day >= CAST(k.day - INTERVAL 30 DAY AS DATE){"" if max_day is None else f" AND d.day <= DATE '{max_day}'"}
         GROUP BY k.category_id, k.day
     """)
     print("category nunique:", con.sql("SELECT count(*) FROM cat_nunique").fetchone()[0])
@@ -447,7 +463,7 @@ def main():
         n = con.sql(f"SELECT count(*) FROM feat_{who}").fetchone()[0]
         print(f"feat_{who}: {n}")
 
-    add_user_category_purchase_features(con)
+    add_user_category_purchase_features(con, max_day)
 
     # Смена внутри [D-30, D) — два разных значения. Значение прямо перед окном
     # учитываем, записи с начала дня D и позже — нет.
@@ -518,17 +534,17 @@ def main():
             JOIN feat_available f_av USING (user_id, item_id, day)
             LEFT JOIN item_changed ch
               ON ch.item_id = ex.item_id AND ch.day = ex.day
-        ) TO '{CANDIDATES_PATH}' (FORMAT parquet)
+        ) TO '{output_path}' (FORMAT parquet)
     """)
 
-    described = con.sql(f"DESCRIBE SELECT * FROM '{CANDIDATES_PATH}'").fetchall()
-    n_rows = con.sql(f"SELECT count(*) FROM '{CANDIDATES_PATH}'").fetchone()[0]
+    described = con.sql(f"DESCRIBE SELECT * FROM '{output_path}'").fetchall()
+    n_rows = con.sql(f"SELECT count(*) FROM '{output_path}'").fetchone()[0]
     n_candidates = len(described) - 3
     print(f"rows: {n_rows}")
     print(f"candidates: {n_candidates}")
 
     bad = con.sql(f"""
-        SELECT count(*) FROM '{CANDIDATES_PATH}'
+        SELECT count(*) FROM '{output_path}'
         WHERE user__view__7__count > user__view__30__count
            OR item__transaction__14__count > item__transaction__30__count
            OR user__view__7__share < 0 OR user__view__7__share > 1

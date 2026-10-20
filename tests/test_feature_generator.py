@@ -222,3 +222,16 @@ def test_constant_within_group_has_group_auc_half():
     tied = np.array([0.2, 0.2, 0.9])
     labels = np.array([1, 0, 1])
     assert abs(roc_auc_small(labels, tied) - roc_auc_score(labels, tied)) < 1e-12
+
+
+def test_default_windows_keep_the_frozen_152_names():
+    from feature_generator import SEARCH_WINDOWS, WINDOWS, candidate_feature_names
+
+    described = [row[0] for row in duckdb.sql(f"DESCRIBE SELECT * FROM '{CANDIDATES}'").fetchall()]
+    frozen = [name for name in described if name not in ("user_id", "item_id", "day")]
+    assert candidate_feature_names() == frozen
+    assert candidate_feature_names(WINDOWS) == frozen
+    assert len(frozen) == 152
+    searched = candidate_feature_names(SEARCH_WINDOWS)
+    assert len(searched) == 272
+    assert set(frozen).issubset(searched)

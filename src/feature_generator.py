@@ -9,6 +9,8 @@ EVENTS = (
     ("transaction", "buys"),
 )
 WINDOWS = (1, 7, 14, 30)
+# Сетка автопоиска из предрегистрации 20.10.2026. Обычный запуск её не берёт.
+SEARCH_WINDOWS = (1, 3, 5, 7, 10, 14, 21, 30)
 CANDIDATES_PATH = "data/feature_candidates.parquet"
 
 # nunique — число разных товаров, поэтому только у пользователя и категории.
@@ -83,14 +85,25 @@ def event_days(con, name, path, keys, day_cap=None):
     return tables
 
 
-def value_columns(who):
+def resolve_windows(windows):
+    """Без аргумента остаётся замороженная сетка 1/7/14/30."""
+    if windows is None:
+        return WINDOWS
+    resolved = tuple(int(item) for item in windows)
+    if 7 not in resolved or 30 not in resolved:
+        raise RuntimeError("в сетке окон нет 7 или 30, тренд 7/30 не построить")
+    return resolved
+
+
+def value_columns(who, windows=None):
     """Формулы count, share, recency и trend. Без nunique."""
+    windows = resolve_windows(windows)
     hi = "hi"
-    alias = {1: "w1", 7: "w7", 14: "w14", 30: "w30"}
+    alias = {w: f"w{w}" for w in windows}
     columns = []
     for event, metric in EVENTS:
-        counts = {w: span(hi, alias[w], metric) for w in WINDOWS}
-        for w in WINDOWS:
+        counts = {w: span(hi, alias[w], metric) for w in windows}
+        for w in windows:
             columns.append((f"{who}__{event}__{w}__count", counts[w]))
             # В окне не было событий: доля неизвестна, это не настоящий ноль.
             total = " + ".join(span(hi, alias[w], m) for _, m in EVENTS)
@@ -102,6 +115,7 @@ def value_columns(who):
         columns.append(
             (f"{who}__{event}__all__recency", f"date_diff('day', r_{event}.day, ex.day)")
         )
+        # Одна пара, не перебор. Окна 7 и 30 входят и в старую сетку, и в автопоиск.
         trend = (
             f"CASE WHEN ({counts[30]}) = 0 THEN NULL "
             f"ELSE ({counts[7]})::DOUBLE / ({counts[30]}) END"
@@ -110,11 +124,12 @@ def value_columns(who):
     return columns
 
 
-def asof_joins(cum_table, day_tables, keys):
+def asof_joins(cum_table, day_tables, keys, windows=None):
+    windows = resolve_windows(windows)
     joins = [asof_before("hi", cum_table, keys, "ex.day")]
     joins.extend(
-        asof_before(alias, cum_table, keys, cutoff(w))
-        for w, alias in ((1, "w1"), (7, "w7"), (14, "w14"), (30, "w30"))
+        asof_before(f"w{w}", cum_table, keys, cutoff(w))
+        for w in windows
     )
     joins.extend(
         asof_before(f"r_{event}", day_tables[event], keys, "ex.day") for event, _ in EVENTS
@@ -135,10 +150,11 @@ def sql_columns(columns, mask_category):
     return ",\n".join(lines)
 
 
-def nunique_columns(who):
+def nunique_columns(who, windows=None):
+    windows = resolve_windows(windows)
     lines = []
     for event, metric in EVENTS:
-        for w in WINDOWS:
+        for w in windows:
             lines.append(
                 f"""count(DISTINCT CASE
                     WHEN d.{metric} > 0
@@ -356,19 +372,51 @@ def add_availability_features(con):
     print("availability:", n_feat)
 
 
-def main(output_path=None, examples_where=None, max_day=None):
+def candidate_feature_names(windows=None):
+    """Имена столбцов в том порядке, в каком их пишет main."""
+    windows = resolve_windows(windows)
+    names = []
+    for who in ("user", "item", "user_item", "category"):
+        names.extend(name for name, _ in value_columns(who, windows))
+        if who in NUNIQUE_WHOS:
+            names.extend(
+                f"{who}__{event}__{w}__nunique"
+                for event, _ in EVENTS
+                for w in windows
+            )
+        if who == "item":
+            names.append("item__category__30__changed")
+    names.extend([
+        USER_CATEGORY_BUY_COUNT,
+        USER_CATEGORY_BUY_SHARE,
+        CATEGORY_ALL_BUY_COUNT,
+        CATEGORY_ALL_REPEAT_SHARE,
+        USER_CATEGORY_BUY_RECENCY,
+        ITEM_AVAILABLE,
+        ITEM_AVAILABLE_SWITCHES,
+    ])
+    return names
+
+
+def main(output_path=None, examples_where=None, max_day=None, windows=None, memory_limit=None):
     """Полный пул кандидатов.
 
-    Без аргументов путь и запросы те же, что у замороженного файла.
-    examples_where и max_day — для замера времени на train+val: официальный
-    parquet при этом не перезаписывается, строки test в таблицу ex не попадают.
+    Без аргументов путь, окна и запросы те же, что у замороженного файла на 152
+    признака. examples_where и max_day — для замера времени на train+val.
+    Другая сетка windows пишет только в отдельный путь.
     """
     if output_path is None:
         output_path = CANDIDATES_PATH
-    if (examples_where or max_day is not None) and str(output_path) == CANDIDATES_PATH:
-        raise RuntimeError("урезанный прогон не перезаписывает data/feature_candidates.parquet")
+    resolved = resolve_windows(windows)
+    other_grid = resolved != WINDOWS
+    if (examples_where or max_day is not None or other_grid) and str(output_path) == CANDIDATES_PATH:
+        raise RuntimeError("этот прогон не перезаписывает data/feature_candidates.parquet")
     con = duckdb.connect()
     con.sql("SET preserve_insertion_order = false")
+    if memory_limit:
+        con.sql(f"SET memory_limit = '{memory_limit}'")
+        con.sql("SET temp_directory = '/tmp/duckdb_spill'")
+    lookback = max(resolved)
     where = "" if not examples_where else f" WHERE {examples_where}"
     con.sql(f"CREATE TABLE ex AS SELECT * FROM 'data/examples.parquet'{where}")
     con.sql(f"""
@@ -396,12 +444,12 @@ def main(output_path=None, examples_where=None, max_day=None):
     con.sql(f"""
         CREATE TABLE user_nunique AS
         SELECT k.user_id, k.day,
-               {nunique_columns("user")}
+               {nunique_columns("user", resolved)}
         FROM user_day k
         LEFT JOIN 'data/daily_user_item.parquet' d
           ON d.user_id = k.user_id
          AND d.day < k.day
-         AND d.day >= CAST(k.day - INTERVAL 30 DAY AS DATE){"" if max_day is None else f" AND d.day <= DATE '{max_day}'"}
+         AND d.day >= CAST(k.day - INTERVAL {lookback} DAY AS DATE){"" if max_day is None else f" AND d.day <= DATE '{max_day}'"}
         GROUP BY k.user_id, k.day
     """)
     print("user nunique:", con.sql("SELECT count(*) FROM user_nunique").fetchone()[0])
@@ -426,12 +474,12 @@ def main(output_path=None, examples_where=None, max_day=None):
     con.sql(f"""
         CREATE TABLE cat_nunique AS
         SELECT k.category_id, k.day,
-               {nunique_columns("category")}
+               {nunique_columns("category", resolved)}
         FROM cat_day k
         LEFT JOIN item_day_cat d
           ON d.category_id = k.category_id
          AND d.day < k.day
-         AND d.day >= CAST(k.day - INTERVAL 30 DAY AS DATE){"" if max_day is None else f" AND d.day <= DATE '{max_day}'"}
+         AND d.day >= CAST(k.day - INTERVAL {lookback} DAY AS DATE){"" if max_day is None else f" AND d.day <= DATE '{max_day}'"}
         GROUP BY k.category_id, k.day
     """)
     print("category nunique:", con.sql("SELECT count(*) FROM cat_nunique").fetchone()[0])
@@ -443,13 +491,13 @@ def main(output_path=None, examples_where=None, max_day=None):
         ("category", "cat_cum", ["category_id"], cat_days, "cat_nunique", "nu.category_id = ex.category_id AND nu.day = ex.day", True),
     )
     for who, cum, keys, days, nunique_table, nunique_on, mask in specs:
-        columns = value_columns(who)
+        columns = value_columns(who, resolved)
         extra_join = ""
         if nunique_table:
             columns.extend(
                 (f"{who}__{event}__{w}__nunique", f"nu.{who}__{event}__{w}__nunique")
                 for event, _ in EVENTS
-                for w in WINDOWS
+                for w in resolved
             )
             extra_join = f"LEFT JOIN {nunique_table} nu ON {nunique_on}"
         con.sql(f"""
@@ -457,7 +505,7 @@ def main(output_path=None, examples_where=None, max_day=None):
             SELECT ex.user_id, ex.item_id, ex.day,
                    {sql_columns(columns, mask)}
             FROM ex
-            {asof_joins(cum, days, keys)}
+            {asof_joins(cum, days, keys, resolved)}
             {extra_join}
         """)
         n = con.sql(f"SELECT count(*) FROM feat_{who}").fetchone()[0]
@@ -499,12 +547,12 @@ def main(output_path=None, examples_where=None, max_day=None):
 
     feature_sql = []
     for who, *_ in specs:
-        cols = [name for name, _ in value_columns(who)]
+        cols = [name for name, _ in value_columns(who, resolved)]
         if who in NUNIQUE_WHOS:
             cols.extend(
                 f"{who}__{event}__{w}__nunique"
                 for event, _ in EVENTS
-                for w in WINDOWS
+                for w in resolved
             )
         feature_sql.extend(f"f_{who}.{name}" for name in cols)
         if who == "item":

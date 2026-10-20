@@ -178,8 +178,8 @@ def decide(names, global_aucs, group_aucs, n_groups, constant_in_group, filled):
     return table, threshold
 
 
-def feature_names(con):
-    described = con.sql(f"DESCRIBE SELECT * FROM '{CANDIDATES_PATH}'").fetchall()
+def feature_names(con, candidates_path=CANDIDATES_PATH):
+    described = con.sql(f"DESCRIBE SELECT * FROM '{candidates_path}'").fetchall()
     return [row[0] for row in described if row[0] not in KEYS]
 
 
@@ -190,15 +190,17 @@ def train_filter(last_day=None):
     return f"e.split = 'train' AND e.day <= DATE '{last_day}'"
 
 
-def run_selection(last_day=None, report_path=REPORT_PATH):
+def run_selection(last_day=None, report_path=REPORT_PATH, candidates_path=CANDIDATES_PATH):
     import duckdb
 
-    if last_day is not None and str(report_path) == str(REPORT_PATH):
-        raise RuntimeError("отбор с окном не перезаписывает report/feature_selection.csv")
+    if str(report_path) == str(REPORT_PATH) and (
+        last_day is not None or str(candidates_path) != str(CANDIDATES_PATH)
+    ):
+        raise RuntimeError("этот отбор не перезаписывает report/feature_selection.csv")
     where = train_filter(last_day)
     con = duckdb.connect()
     # Метки val и test не читаем: порог считается только по train.
-    names = feature_names(con)
+    names = feature_names(con, candidates_path)
     keys = con.sql(f"""
         SELECT user_id, day, label
         FROM 'data/examples.parquet' e
@@ -218,7 +220,7 @@ def run_selection(last_day=None, report_path=REPORT_PATH):
         frame = con.sql(f"""
             SELECT {quoted}
             FROM 'data/examples.parquet' e
-            JOIN '{CANDIDATES_PATH}' c USING (user_id, item_id, day)
+            JOIN '{candidates_path}' c USING (user_id, item_id, day)
             WHERE {where}
             ORDER BY e.user_id, e.day, e.item_id
         """).fetchnumpy()
@@ -243,7 +245,7 @@ def run_selection(last_day=None, report_path=REPORT_PATH):
         frame = con.sql(f"""
             SELECT {quoted}
             FROM 'data/examples.parquet' e
-            JOIN '{CANDIDATES_PATH}' c USING (user_id, item_id, day)
+            JOIN '{candidates_path}' c USING (user_id, item_id, day)
             WHERE {where}
             ORDER BY e.user_id, e.day, e.item_id
         """).fetchnumpy()

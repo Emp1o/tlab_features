@@ -8,7 +8,7 @@ import duckdb
 import lightgbm as lgb
 import numpy as np
 import pandas as pd
-from sklearn.metrics import roc_auc_score
+from sklearn.metrics import log_loss, roc_auc_score
 
 from train_lgbm import (
     BOOTSTRAP_SEED,
@@ -207,6 +207,14 @@ def baseline_scores(val, event_last_day, manual_split):
     )
 
 
+def safe_logloss(labels, scores):
+    """Logloss только для вероятностей. Счётчики бейзлайна сюда не входят."""
+    scores = np.asarray(scores, dtype=np.float64)
+    if scores.size == 0 or np.nanmin(scores) < 0 or np.nanmax(scores) > 1:
+        return float("nan")
+    return float(log_loss(labels, np.clip(scores, 1e-15, 1 - 1e-15)))
+
+
 def metric_row(period, name, val, scores, tie_seed, n_features, iterations):
     grouped = per_group_metrics(val, scores, seed=tie_seed)
     return {
@@ -218,7 +226,10 @@ def metric_row(period, name, val, scores, tie_seed, n_features, iterations):
         "ndcg_3": float(grouped["ndcg3"].mean()),
         "ndcg_5": float(grouped["ndcg5"].mean()),
         "mrr": float(grouped["mrr"].mean()),
+        "recall_3": float(grouped["recall3"].mean()),
+        "recall_5": float(grouped["recall5"].mean()),
         "auc": float(roc_auc_score(val["label"], scores)),
+        "logloss": safe_logloss(val["label"], scores),
         "iterations": ",".join(str(item) for item in iterations) if iterations else "",
     }, grouped
 

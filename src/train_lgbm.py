@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 from sklearn.metrics import roc_auc_score
 
-from metrics import ndcg_at_k, reciprocal_rank
+from metrics import ndcg_at_k, recall_at_k, reciprocal_rank
 
 ROOT = Path(__file__).resolve().parents[1]
 EXAMPLES_PATH = ROOT / "data" / "examples.parquet"
@@ -150,7 +150,8 @@ def per_group_metrics(df, scores, seed=TIE_SEED):
     rng = np.random.default_rng(seed)
     work = df[["user_id", "item_id", "day", "label"]].copy()
     work["score"] = scores
-    ndcg3, ndcg5, mrrs, sizes, users, days = [], [], [], [], [], []
+    ndcg3, ndcg5, mrrs, recall3, recall5 = [], [], [], [], []
+    sizes, users, days = [], [], []
     for (user_id, day), group in work.groupby(["user_id", "day"], sort=True):
         if len(group) < 2 or int(group["label"].sum()) < 1:
             continue
@@ -161,6 +162,8 @@ def per_group_metrics(df, scores, seed=TIE_SEED):
         ndcg3.append(ndcg_at_k(labels, 3))
         ndcg5.append(ndcg_at_k(labels, 5))
         mrrs.append(reciprocal_rank(labels))
+        recall3.append(recall_at_k(labels, 3))
+        recall5.append(recall_at_k(labels, 5))
         sizes.append(len(group))
         users.append(user_id)
         days.append(day)
@@ -168,6 +171,8 @@ def per_group_metrics(df, scores, seed=TIE_SEED):
         "ndcg3": np.asarray(ndcg3, dtype=np.float64),
         "ndcg5": np.asarray(ndcg5, dtype=np.float64),
         "mrr": np.asarray(mrrs, dtype=np.float64),
+        "recall3": np.asarray(recall3, dtype=np.float64),
+        "recall5": np.asarray(recall5, dtype=np.float64),
         "size": np.asarray(sizes, dtype=np.int32),
         "user_id": np.asarray(users),
         "day": np.asarray(days),

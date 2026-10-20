@@ -7,7 +7,6 @@
    На val2 A_new и A_new+7 обучаются ровно на это число, без меток val2.
 """
 
-import numpy as np
 import pandas as pd
 
 from feature_selector import run_selection
@@ -25,7 +24,15 @@ from second_period import (
     metric_row,
     slice_period,
 )
-from train_lgbm import BOOTSTRAP_SEED, N_BOOTSTRAP, ROOT, TIE_SEED, bootstrap_indices, diff_ci
+from train_lgbm import (
+    BOOTSTRAP_SEED,
+    N_BOOTSTRAP,
+    ROOT,
+    TIE_SEED,
+    bootstrap_indices,
+    diff_ci,
+    same_groups,
+)
 
 TRAIN2_SELECTION = ROOT / "report" / "feature_selection_train2.csv"
 OUT_PATH = ROOT / "report" / "judge_review.csv"
@@ -85,6 +92,7 @@ def main():
         ("early_stop", "train2_selected", tuple(selected), None),
         ("fixed_rounds", "A_new", A_NEW, n_rounds),
         ("fixed_rounds", "A_new_plus", A_NEW_PLUS, n_rounds),
+        ("fixed_rounds", "train2_selected", tuple(selected), n_rounds),
     ]
     # Одинаковый набор и одинаковый режим не обучаем второй раз.
     fitted_groups = {}
@@ -125,12 +133,8 @@ def main():
     anchor = fitted_groups[("early_stop", "A_new")]
     n_groups = len(anchor["ndcg3"])
     for grouped in fitted_groups.values():
-        if len(grouped["ndcg3"]) != n_groups:
-            raise RuntimeError("разное число групп")
-        if not np.array_equal(grouped["user_id"], anchor["user_id"]):
-            raise RuntimeError("разные группы")
-        if not np.array_equal(grouped["day"], anchor["day"]):
-            raise RuntimeError("разные дни групп")
+        if not same_groups(grouped, anchor):
+            raise RuntimeError("разные группы (user_id, day)")
     indices = bootstrap_indices(n_groups, N_BOOTSTRAP, BOOTSTRAP_SEED)
     pairs = (
         ("early_stop", "train2_selected", "early_stop", "A_new", "train2_selected-A_new"),
@@ -139,6 +143,8 @@ def main():
         ("fixed_rounds", "A_new_plus", "fixed_rounds", "A_new", "A_new_plus-A_new"),
         ("fixed_rounds", "A_new", "baseline", "popularity", "A_new-popularity"),
         ("fixed_rounds", "A_new_plus", "baseline", "popularity", "A_new_plus-popularity"),
+        ("fixed_rounds", "train2_selected", "fixed_rounds", "A_new", "train2_selected-A_new"),
+        ("fixed_rounds", "train2_selected", "baseline", "popularity", "train2_selected-popularity"),
     )
     diff_rows = []
     for left_p, left_n, right_p, right_n, name in pairs:
@@ -212,5 +218,83 @@ def main():
     print(f"фиксированных деревьев: {n_rounds}", flush=True)
 
 
+def fixed_train2():
+    """Набор train2 на val2 при 80 деревьях, без eval_set.
+
+    Те же бутстреп-индексы, что у ранней остановки: seed 42, 1000, порядок
+    групп (user_id, day). A_new с теми же 80 деревьями пересчитывается в том
+    же прогоне, чтобы разницы были парными.
+    """
+    table = pd.read_csv(TRAIN2_SELECTION)
+    selected = table.loc[table["прошёл"] == 1, "признак"].tolist()
+    if len(selected) != 23:
+        raise RuntimeError(f"ожидалось 23 признака train2, есть {len(selected)}")
+    frame = load_frame(selected)
+    train2, val2 = slice_period(frame, TRAIN2_LAST, "2015-08-07", VAL2_LAST, "train")
+    print(f"val2 fixed: train {len(train2)}  val {len(val2)}", flush=True)
+    popularity, _, _ = baseline_scores(val2, VAL2_LAST, "train")
+    fitted = {}
+    rows = []
+    for name, features in (("A_new", A_NEW), ("train2_selected", tuple(selected))):
+        print(f"обучаю fixed_rounds {name}: {len(features)}", flush=True)
+        scores, seed_ndcg, iterations = average_scores(train2, val2, features, n_rounds=80)
+        row, grouped = metric_row("val2", name, val2, scores, TIE_SEED, len(features), iterations)
+        row["record"] = "metrics"
+        row["protocol"] = "fixed_rounds"
+        rows.append(row)
+        rows.append({
+            "record": "seeds",
+            "period": "val2",
+            "protocol": "fixed_rounds",
+            "name": name,
+            "ndcg_3_min": min(seed_ndcg),
+            "ndcg_3_max": max(seed_ndcg),
+            "ndcg_3_seeds": ",".join(f"{value:.6f}" for value in seed_ndcg),
+            "iterations": ",".join(str(item) for item in iterations),
+        })
+        fitted[name] = grouped
+        print(f"  NDCG@3 {row['ndcg_3']:.6f}", flush=True)
+    pop_row, pop_grouped = metric_row("val2", "popularity", val2, popularity, 0, None, [])
+    pop_row["record"] = "metrics"
+    pop_row["protocol"] = "baseline"
+    rows.append(pop_row)
+    fitted["popularity"] = pop_grouped
+    for grouped in fitted.values():
+        if not same_groups(grouped, fitted["A_new"]):
+            raise RuntimeError("разные группы (user_id, day)")
+    n_groups = len(fitted["A_new"]["ndcg3"])
+    indices = bootstrap_indices(n_groups, N_BOOTSTRAP, BOOTSTRAP_SEED)
+    for left, right, name in (
+        ("train2_selected", "A_new", "train2_selected-A_new"),
+        ("A_new", "popularity", "A_new-popularity"),
+        ("train2_selected", "popularity", "train2_selected-popularity"),
+    ):
+        estimate, low, high = diff_ci(fitted[left]["ndcg3"], fitted[right]["ndcg3"], indices)
+        rows.append({
+            "record": "diff",
+            "period": "val2",
+            "protocol": "fixed_rounds" if right != "popularity" else "fixed_rounds_vs_baseline",
+            "name": name,
+            "n_groups": n_groups,
+            "ndcg_3": estimate,
+            "ndcg_3_low": low,
+            "ndcg_3_high": high,
+        })
+        print(f"{name}: {estimate:.6f} ({low:.6f}–{high:.6f})", flush=True)
+    extra = pd.DataFrame(rows)
+    header = pd.read_csv(OUT_PATH, nrows=0).columns.tolist()
+    for column in header:
+        if column not in extra.columns:
+            extra[column] = pd.NA
+    with OUT_PATH.open("a", encoding="utf-8") as handle:
+        extra[header].to_csv(handle, index=False, header=False)
+    print(f"дописано в {OUT_PATH}", flush=True)
+
+
 if __name__ == "__main__":
-    main()
+    import sys
+
+    if len(sys.argv) > 1 and sys.argv[1] == "--fixed-train2":
+        fixed_train2()
+    else:
+        main()

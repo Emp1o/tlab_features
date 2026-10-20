@@ -130,6 +130,17 @@ def fit_model(train, val, features, n_rounds=None):
     return model, scores
 
 
+def same_groups(left, right):
+    """Один и тот же порядок групп (user_id, day). Одного user_id недостаточно."""
+    if len(left["user_id"]) != len(right["user_id"]):
+        return False
+    if not np.array_equal(np.asarray(left["user_id"]), np.asarray(right["user_id"])):
+        return False
+    left_day = pd.to_datetime(np.asarray(left["day"])).to_numpy().astype("datetime64[D]")
+    right_day = pd.to_datetime(np.asarray(right["day"])).to_numpy().astype("datetime64[D]")
+    return bool(np.array_equal(left_day, right_day))
+
+
 def per_group_metrics(df, scores, seed=TIE_SEED):
     """NDCG и MRR по группам из двух и более товаров с хотя бы одной покупкой.
 

@@ -9,6 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from train_lgbm import EXAMPLES_PATH, TRAIN_LAST, VAL_FIRST, VAL_LAST, ensure_train_rows, load_keys
 
 
+@pytest.mark.needs_data("data/examples.parquet")
 def test_training_rows_exclude_val_and_test():
     keys = load_keys()
     assert set(keys["split"]) == {"train", "val"}

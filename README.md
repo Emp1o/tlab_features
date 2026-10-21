@@ -95,6 +95,8 @@ python src/judge_review.py
 python scripts/run_test.py
 ```
 
+`pytest` — без данных часть тестов пропускается с пояснением; полный прогон после загрузки данных и запуска пайплайна.
+
 `src/dataset_sparsity.py` читает только `data/events.csv` и пишет `report/dataset_sparsity.csv`. 27 ручных признаков считает `src/features_manual.py`; состав — в [`report/features_manual.md`](report/features_manual.md).
 
 Повторный запуск генераторов перезаписывает parquet в `data/`. `scripts/run_test.py` уже выполнен один раз 20.10.2026 и отказывается перезаписывать `report/test_run.csv`.

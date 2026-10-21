@@ -3,6 +3,7 @@ from pathlib import Path
 
 import duckdb
 import numpy as np
+import pytest
 from sklearn.metrics import roc_auc_score
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -22,6 +23,11 @@ def _con():
     return duckdb.connect()
 
 
+@pytest.mark.needs_data(
+    "data/feature_candidates.parquet",
+    "data/examples.parquet",
+    "data/events_clean.parquet",
+)
 def test_features_ignore_events_on_day_d():
     con = _con()
     pool = con.sql(f"""
@@ -67,6 +73,11 @@ def test_features_ignore_events_on_day_d():
     assert check == 0
 
 
+@pytest.mark.needs_data(
+    "data/feature_candidates.parquet",
+    "data/examples.parquet",
+    "data/events_clean.parquet",
+)
 def test_pair_with_events_only_on_day_d_has_empty_pair_features():
     con = _con()
     n_pairs, n_bad = con.sql(f"""
@@ -106,6 +117,10 @@ def test_pair_with_events_only_on_day_d_has_empty_pair_features():
     assert n_bad == 0
 
 
+@pytest.mark.needs_data(
+    "data/feature_candidates.parquet",
+    "data/examples.parquet",
+)
 def test_fallback_category_features_are_null():
     con = _con()
     n_bad = con.sql(f"""
@@ -125,6 +140,11 @@ def test_fallback_category_features_are_null():
     assert n_bad == 0
 
 
+@pytest.mark.needs_data(
+    "data/feature_candidates.parquet",
+    "data/examples.parquet",
+    "data/item_category.parquet",
+)
 def test_category_change_uses_only_records_before_day_d():
     con = _con()
     pool = con.sql(f"""
@@ -224,6 +244,7 @@ def test_constant_within_group_has_group_auc_half():
     assert abs(roc_auc_small(labels, tied) - roc_auc_score(labels, tied)) < 1e-12
 
 
+@pytest.mark.needs_data("data/feature_candidates.parquet")
 def test_default_windows_keep_the_frozen_152_names():
     from feature_generator import SEARCH_WINDOWS, WINDOWS, candidate_feature_names
 

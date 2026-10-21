@@ -77,6 +77,10 @@ def test_baseline_diffs_use_the_same_groups():
     assert a_pop["ndcg_3"] == pytest.approx(left["ndcg3"].mean() - right["ndcg3"].mean())
 
 
+@pytest.mark.needs_data(
+    "data/events_clean.parquet",
+    "data/examples.parquet",
+)
 def test_label_is_transaction_only():
     con = duckdb.connect()
     n_bad, n_cart_only_positive = con.sql(f"""

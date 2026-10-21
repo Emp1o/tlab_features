@@ -52,6 +52,10 @@ def _sample(con, split, n, nonzero_pair):
     return df.iloc[take].reset_index(drop=True)
 
 
+@pytest.mark.needs_data(
+    "data/features_manual.parquet",
+    "data/events_clean.parquet",
+)
 def test_features_match_events():
     con = duckdb.connect()
     sample = pd.concat(
@@ -94,6 +98,10 @@ def test_features_match_events():
     assert check == 0
 
 
+@pytest.mark.needs_data(
+    "data/features_manual.parquet",
+    "data/events_clean.parquet",
+)
 def test_pair_features_ignore_same_day_events():
     """У пары, чьи события только в день D, эти события не входят в признаки."""
     con = duckdb.connect()
@@ -123,6 +131,12 @@ def test_pair_features_ignore_same_day_events():
     assert n_bad == 0
 
 
+@pytest.mark.needs_data(
+    "data/item_category.parquet",
+    "data/events_clean.parquet",
+    "data/examples.parquet",
+    "data/feature_candidates.parquet",
+)
 def test_user_category_buys_do_not_leak():
     """Покупки в категории не видят день D, будущее и категорию с начала этого дня.
 
@@ -270,6 +284,12 @@ def test_user_category_buys_do_not_leak():
     assert n_unknown == 0
 
 
+@pytest.mark.needs_data(
+    "data/item_category.parquet",
+    "data/events_clean.parquet",
+    "data/examples.parquet",
+    "data/feature_candidates.parquet",
+)
 def test_category_all_purchase_features_do_not_leak():
     """Категорийные признаки считают покупки всех пользователей до дня D.
 
@@ -401,6 +421,12 @@ def test_category_all_purchase_features_do_not_leak():
     assert n_raw > 0
 
 
+@pytest.mark.needs_data(
+    "data/item_category.parquet",
+    "data/events_clean.parquet",
+    "data/examples.parquet",
+    "data/feature_candidates.parquet",
+)
 def test_user_category_recency_does_not_leak():
     """Давность — дни до последней покупки пользователя в категории, строго до дня D.
 
@@ -496,6 +522,12 @@ def test_user_category_recency_does_not_leak():
     assert n_known > 0
 
 
+@pytest.mark.needs_data(
+    "data/item_properties_part1.csv",
+    "data/item_properties_part2.csv",
+    "data/examples.parquet",
+    "data/feature_candidates.parquet",
+)
 def test_availability_does_not_use_same_day_snapshot():
     """available и число смен 0↔1 смотрят только снимки строго до 03:00 дня группы."""
     con = duckdb.connect()

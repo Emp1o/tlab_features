@@ -1,0 +1,13 @@
+metric,value,note
+events,2756101,"сырой лог, все типы"
+users,1407580,уникальные visitorid
+transaction_events,22457,события transaction
+transaction_share,0.008148,transaction_events / events
+event_types,3,"view, addtocart, transaction"
+median_events_per_user,1.0,квантиль 0.5 числа событий на пользователя
+buyers,11719,пользователи с хотя бы одной покупкой
+buyers_at_most_2_items,10834,из покупателей: 1 или 2 разных товара
+rank_groups_train,5579,"2015-05-03 — 2015-08-20, включая окно val2"
+rank_groups_val,617,2015-08-21 — 2015-09-03
+rank_groups_val2,589,2015-08-07 — 2015-08-20
+rank_groups_test,584,2015-09-04 — 2015-09-17

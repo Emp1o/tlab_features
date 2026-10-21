@@ -1,4 +1,4 @@
-"""Проверка Судьи. Test не читается, решение A_new не меняется.
+"""Проверка устойчивости. Test не читается, решение A_new не меняется.
 
 1. Счётчик короткой истории больше не тождественный ноль.
 2. Тот же отборщик на train2 (строго до val2), отдельный csv.
@@ -35,7 +35,7 @@ from train_lgbm import (
 )
 
 TRAIN2_SELECTION = ROOT / "report" / "feature_selection_train2.csv"
-OUT_PATH = ROOT / "report" / "judge_review.csv"
+OUT_PATH = ROOT / "report" / "robustness_check.csv"
 
 
 def median_iteration(iterations):

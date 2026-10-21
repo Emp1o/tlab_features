@@ -121,7 +121,7 @@ python scripts/run_test.py
 | `report/test_posthoc.csv` | один описательный post-hoc test |
 | `report/dataset_sparsity.csv` | объём лога, покупатели, группы с покупкой |
 | `report/features_manual.md` | 27 ручных признаков |
-| `STATUS.md` | живой статус и заморозка |
+| `STATUS.md` | контрольные суммы замороженных входов теста (читается scripts/run_test*.py) |
 
 ## Кандидаты
 

@@ -36,6 +36,8 @@ RetailRocket — открытый датасет с реальными собы�
 
 Сутки начинаются в 03:00 UTC. День строки — дата `timestamp` после сдвига на 3 часа.
 
+Данные не сэмплировались, история пользователей полная: используются все события RetailRocket; исключены целиком только 32 бота (≥200 событий без корзин и покупок на днях train), см. `src/prepare.py`.
+
 Каталог `data/`:
 
 | файл | что это |
@@ -75,6 +77,7 @@ pip install -r requirements.txt
 Сначала данные. Датасет [Retailrocket recommender system dataset](https://www.kaggle.com/datasets/retailrocket/ecommerce-dataset) кладётся в `data/` под этими именами: `events.csv`, `category_tree.csv`, `item_properties_part1.csv`, `item_properties_part2.csv`. Каталог `data/` в git не входит.
 
 ```bash
+pip install kaggle
 kaggle datasets download -d retailrocket/ecommerce-dataset -p data --unzip
 ```
 
@@ -91,7 +94,7 @@ python src/feature_generator.py
 python src/feature_selector.py
 python src/train_lgbm.py
 python src/second_period.py
-python src/judge_review.py
+python src/robustness_check.py
 python scripts/run_test.py
 ```
 
@@ -99,7 +102,7 @@ python scripts/run_test.py
 
 `src/dataset_sparsity.py` читает только `data/events.csv` и пишет `report/dataset_sparsity.csv`. 27 ручных признаков считает `src/features_manual.py`; состав — в [`report/features_manual.md`](report/features_manual.md).
 
-Повторный запуск генераторов перезаписывает parquet в `data/`. `scripts/run_test.py` уже выполнен один раз 20.10.2026 и отказывается перезаписывать `report/test_run.csv`.
+Повторный запуск генераторов перезаписывает parquet в `data/`. `scripts/run_test.py` уже выполнен один раз 20.10.2026 и отказывается перезаписывать `report/test_run.csv`. При пересборке данных sha256 parquet-файлов могут не совпасть (например, из-за версий библиотек) — тогда сравнивать метрики с `report/test_run.csv`.
 
 `src/baselines.py`, `src/baseline_diffs.py` и `src/category_compare.py` в репозитории есть. Это ранние прогоны только на train и val: бейзлайны печатает `baselines.py`, разницы с ними пишет `baseline_diffs.py` в `report/baseline_diffs.csv`, сравнение категорий и наличия — `category_compare.py` в `report/category_comparison.csv`, `report/category_recency_comparison.csv`, `report/category_recency_rates.csv` и `report/availability_comparison.csv`. В цепочку выше они не входят, test не читают, прогоны уже сделаны.
 
@@ -116,13 +119,13 @@ python scripts/run_test.py
 | `report/cost.csv` | время и пик RAM, в том числе каждый сид |
 | `report/feature_selection.csv` | отбор, 21 признак A_new |
 | `report/second_period.csv` | второй период |
-| `report/judge_review.csv` | фиксированные 80 деревьев и набор train2 |
+| `report/robustness_check.csv` | фиксированные 80 деревьев и набор train2 |
 | `report/test_run.csv` | один прогон test |
 | `report/window_search.csv` | автопоиск окон, val1 и val2 |
 | `report/window_cost.csv` | время и память автопоиска |
 | `report/test_posthoc.csv` | один описательный post-hoc test |
 | `report/dataset_sparsity.csv` | объём лога, покупатели, группы с покупкой |
-| `report/features_manual.md` | 27 ручных признаков |
+| `report/features_manual.md` | 27 ручных признаков, документ написан вручную |
 | `STATUS.md` | контрольные суммы замороженных входов теста (читается scripts/run_test*.py) |
 
 ## Кандидаты
@@ -132,6 +135,16 @@ python scripts/run_test.py
 Метрики ранжирования считаются только по группам с не меньше чем двумя товарами и хотя бы одной покупкой.
 
 Признаки смотрят только события строго до начала дня D. Категория строки и наличие — последний снимок с timestamp строго раньше 03:00 этого дня. Категория прошлой покупки берётся на момент той покупки. Неизвестная категория или снимок — пустое значение, не ноль.
+
+### Почему нет утечек
+
+- Разбиение строго по времени: train до 2015-08-20, val 2015-08-21 — 2015-09-03, test 2015-09-04 — 2015-09-17.
+- Признаки считаются только по событиям до начала дня D. Сутки начинаются в 03:00 UTC (`DAY_SHIFT_MS` в `src/prepare.py`, строка 3, и в `src/feature_generator.py`): в окна входят дни строго раньше D.
+- Категория строки и наличие — последний снимок до начала дня, ASOF JOIN с условием `day_start_ms > ts` в `src/feature_generator.py` (снимок ровно в 03:00 не входит). Категория прошлой покупки — на момент этой покупки.
+- Боты определяются только по дням train: `src/prepare.py`, строки 34–41, порог 200 событий и ни одной корзины или покупки (`BOT_MIN_EVENTS`, строка 4).
+- Отбор признаков — на `split = 'train'` (`src/feature_selector.py`). Число деревьев — медиана best_iteration на val; test в `eval_set` не передаётся (`src/train_lgbm.py`).
+- Оценку на test делают только `scripts/run_test.py` и `scripts/run_test_posthoc.py`. `src/prepare.py` ставит метку сплита, `src/dataset_sparsity.py` считает группы; `src/second_period.py`, `src/window_search.py` и `src/audit_baselines.py` отказываются читать строки test.
+- Четыре проверки as-of в [`tests/test_leakage.py`](tests/test_leakage.py) — покупки в категории, сводки по категории, давность и наличие. Они запускаются после загрузки данных.
 
 ## Генератор признаков
 
@@ -368,9 +381,11 @@ W_auto − A_new: 0.0023 (−0.0083–0.0126). W_auto − popularity: 0.0465 (0.
 
 A_new обучается в 2.5 раза быстрее модели на всех кандидатах, но сама автогенерация признаков дороже ручного набора. Автопуть до обучения: генерация 67.5 с + отбор 41.9 с = 109.4 с. Ручная генерация — 6.1 с. Время из `report/cost.csv`.
 
+Генерация 152 кандидатов на 2 052 992 строках train+val (день не позже 2015-09-03) заняла 67.5 с при пике 9.1 ГБ (`report/cost.csv`). Генерация 272 кандидатов сетки окон — 73.9 с при пике 12.4 ГБ на 2 259 142 строках всех сплитов; метрики test при этом не считались (`report/window_cost.csv`). Для KION или Yambda ту же генерацию можно делать по партициям.
+
 ### 3. Честность эксперимента
 - Признаки строятся только по прошлому, разбиение — по времени.
-- Test заморожен; один основной предрегистрированный прогон (`scripts/run_test.py`) и один описательный post-hoc (`scripts/run_test_posthoc.py`). Предрегистрация `bbf4b42`, итоговая формулировка `d31cb8a` (основной прогон запущен с неё), результат `98bbc9a`.
+- Test заморожен; один основной предрегистрированный прогон (`scripts/run_test.py`) и один описательный post-hoc (`scripts/run_test_posthoc.py`). Предрегистрация `bbf4b42`, итоговая формулировка `d31cb8a` (основной прогон запущен с неё), результат `98bbc9a`. Тексты предрегистраций и журнал: `git show d31cb8a:STATUS.md` (тест), `git show b97e03f:STATUS.md` (второй период), `git show 9b36fc6:STATUS.md` (автопоиск окон); в рабочем STATUS.md оставлены только sha256.
 - Независимая проверка показала, что отбор видел val2. Повторный отбор только на train2 дал почти тот же набор (23 признака, совпадение 91%) и незначимую разницу (+0.002). Test в отборе не участвовал, поэтому оценка на нём не завышена подбором.
 
 ### 4. Что не сработало
@@ -405,4 +420,4 @@ Gain LightGBM для A_new в [`report/lgbm_comparison.csv`](report/lgbm_compari
 
 ## Использование ИИ
 
-Код написан с помощью ИИ-ассистента Cursor; постановка задачи, гипотезы, протокол проверки и выводы — мои. Отсутствие утечек проверяется тестами в `tests/test_leakage.py`.
+Код и прогоны сделаны с помощью ИИ-агентов Cursor; независимая проверка протокола — тоже ИИ-агент. Постановка задачи, гипотезы, правила предрегистрации и выводы — мои. Почему нет утечек — см. раздел «Почему нет утечек» выше; `tests/test_leakage.py` запускается после загрузки данных.
